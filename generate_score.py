@@ -90,75 +90,9 @@ def init():
     return args
 
 
-def build_model(args):
-    if args.model == 'aasist':
-        feat_model = Rawaasist().to(args.device)
-    if args.model == 'specresnet':
-        feat_model = ResNet18ForAudio().to(args.device)
-    if args.model == 'fr-w2v2aasist':
-        feat_model = XLSRAASIST(model_dir=args.xlsr).to(args.device)
-    if args.model == 'fr-wavlmaasist':
-        feat_model = WAVLMAASIST(model_dir=args.wavlm).to(args.device)
-    if args.model == 'fr-mertaasist':
-        feat_model = MERTAASIST(model_dir=args.mert).to(args.device)
-    if args.model == 'ft-w2v2aasist':
-        feat_model = XLSRAASIST(model_dir=args.xlsr, freeze=False).to(args.device)
-    if args.model == 'ft-wavlmaasist':
-        feat_model = WAVLMAASIST(model_dir=args.wavlm, freeze=False).to(args.device)
-    if args.model == 'ft-mertaasist':
-        feat_model = MERTAASIST(model_dir=args.mert, freeze=False).to(args.device)
-    if args.model == 'ft-xlsrwavlmaasist':
-        feat_model = XLSRWAVLMAASIST(
-            xlsr_model_dir=args.xlsr,
-            wavlm_model_dir=args.wavlm,
-            freeze=False,
-            fusion=getattr(args, 'fusion', 'cat_linear'),
-        ).to(args.device)
-    if args.model == 'ft-xlsrbeats_aasist':
-        feat_model = XLSRBEATSAASIST(
-            xlsr_model_dir=args.xlsr,
-            beats_model_dir=args.beats,
-            freeze=False
-        ).to(args.device)
-    if args.model == 'ft-xlsrmertaasist':
-        feat_model = XLSRMERTAASIST(
-            xlsr_model_dir=args.xlsr,
-            mert_model_dir=args.mert,
-            freeze=False,
-            fusion=getattr(args, 'fusion', 'cat_linear'),
-        ).to(args.device)
-    if args.model == 'pt-w2v2aasist':
-        feat_model = PTW2V2AASIST(
-            model_dir=args.xlsr,
-            prompt_dim=args.prompt_dim,
-            num_prompt_tokens=args.num_prompt_tokens,
-            dropout=args.pt_dropout
-        ).to(args.device)
-    if args.model == "wpt-w2v2aasist":
-        feat_model = WPTW2V2AASIST(
-            model_dir=args.xlsr,
-            prompt_dim=args.prompt_dim,
-            num_prompt_tokens=args.num_prompt_tokens,
-            num_wavelet_tokens=args.num_wavelet_tokens,
-            dropout=args.pt_dropout
-        ).to(args.device)
-    
-    if args.model == 'ft-beats_aasist':
-        feat_model = BEATs_AASIST(model_dir=args.beats).to(args.device)
-    if args.model == 'ft-xlsr_sls':
-        feat_model = XLSR_SLS(model_dir=args.xlsr).to(args.device)
-    if args.model == 'ft-clap_aasist':
-        feat_model = CLAP_AASIST(model_dir=args.clap).to(args.device)
-    if args.model == 'ft-xlsrclapaasist':
-        feat_model = XLSRCLAPAASIST(
-            xlsr_model_dir=args.xlsr,
-            clap_model_dir=args.clap,
-            freeze=False,
-            fusion=getattr(args, 'fusion', 'cat_linear'),
-        ).to(args.device)
-
-
-    return feat_model
+def load_model(args):
+    """Build model from registry and move to args.device."""
+    return build_model(args).to(args.device)
 
 def gen_score(model, args):
     test_set = atadd_eval_dataset(
@@ -213,7 +147,7 @@ if __name__ == "__main__":
     checkpoint = torch.load(ckpt_path, map_location=args.device)
 
     print("Model:", args.model)
-    feat_model = build_model(args)
+    feat_model = load_model(args)
     feat_model.load_state_dict(checkpoint)
     feat_model.eval()
 

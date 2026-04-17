@@ -4,12 +4,18 @@ import torch.nn.functional as F
 import torch.nn.init as init
 import os
 from pytorch_model_summary import summary
-from typing import Union
+from typing import Union, Optional, Callable
 from feature_extraction import *
 import torchvision.models as models
 import torchaudio
 from dataclasses import dataclass
 from exp.feature_extraction_exp import *
+
+
+# =============================================================================
+# AASIST building blocks
+# =============================================================================
+
 class GraphAttentionLayer(nn.Module):
     def __init__(self, in_dim, out_dim, **kwargs):
         super().__init__()
@@ -148,42 +154,29 @@ class HtrgGraphAttentionLayer(nn.Module):
         x1  :(#bs, #node, #dim)
         x2  :(#bs, #node, #dim)
         '''
-        # print('x1',x1.shape)
-        # print('x2',x2.shape)
         num_type1 = x1.size(1)
         num_type2 = x2.size(1)
-        # print('num_type1',num_type1)
-        # print('num_type2',num_type2)
         x1 = self.proj_type1(x1)
-        # print('proj_type1',x1.shape)
         x2 = self.proj_type2(x2)
-        # print('proj_type2',x2.shape)
         x = torch.cat([x1, x2], dim=1)
-        # print('Concat x1 and x2',x.shape)
 
         if master is None:
             master = torch.mean(x, dim=1, keepdim=True)
-            # print('master',master.shape)
         # apply input dropout
         x = self.input_drop(x)
 
         # derive attention map
         att_map = self._derive_att_map(x, num_type1, num_type2)
-        # print('master',master.shape)
         # directional edge for master node
         master = self._update_master(x, master)
-        # print('master',master.shape)
         # projection
         x = self._project(x, att_map)
-        # print('proj x',x.shape)
         # apply batch norm
         x = self._apply_BN(x)
         x = self.act(x)
 
         x1 = x.narrow(1, 0, num_type1)
-        # print('x1',x1.shape)
         x2 = x.narrow(1, num_type1, num_type2)
-        # print('x2',x2.shape)
         return x1, x2, master
 
     def _update_master(self, x, master):
@@ -361,23 +354,22 @@ class Residual_block(nn.Module):
         else:
             out = x
 
-        # print('out',out.shape)
         out = self.conv1(x)
 
-        # print('aft conv1 out',out.shape)
         out = self.bn2(out)
         out = self.selu(out)
-        # print('out',out.shape)
         out = self.conv2(out)
-        # print('conv2 out',out.shape)
 
         if self.downsample:
             identity = self.conv_downsample(identity)
 
         out += identity
-        # out = self.mp(out)
         return out
 
+
+# =============================================================================
+# SSLAASIST backend  
+# =============================================================================
 
 class SSLAASIST(nn.Module):
     def __init__(self, in_dim=1024):
@@ -388,10 +380,6 @@ class SSLAASIST(nn.Module):
         gat_dims = [64, 32]
         pool_ratios = [0.5, 0.5, 0.5, 0.5]
         temperatures = [2.0, 2.0, 100.0, 100.0]
-
-        ####
-        # create network wav2vec 2.0
-        ####
 
         self.first_bn = nn.BatchNorm2d(num_features=1)
         self.first_bn1 = nn.BatchNorm2d(num_features=64)
@@ -408,13 +396,12 @@ class SSLAASIST(nn.Module):
             nn.Sequential(Residual_block(nb_filts=filts[4])),
             nn.Sequential(Residual_block(nb_filts=filts[4])))
         self.LL = nn.Linear(in_dim, 128)
-        
+
         self.attention = nn.Sequential(
             nn.Conv2d(64, 128, kernel_size=(1, 1)),
             nn.SELU(inplace=True),
             nn.BatchNorm2d(128),
             nn.Conv2d(128, 64, kernel_size=(1, 1)),
-
         )
         # position encoding
         self.pos_S = nn.Parameter(torch.randn(1, 42, filts[-1][-1]))
@@ -449,7 +436,6 @@ class SSLAASIST(nn.Module):
         self.pool_hT2 = GraphPool(pool_ratios[2], gat_dims[1], 0.3)
 
         self.out_layer = nn.Linear(5 * gat_dims[1], 2)
-
 
     def forward(self, x):
 
@@ -541,86 +527,12 @@ class SSLAASIST(nn.Module):
         last_hidden = self.drop(last_hidden)
         output = self.out_layer(last_hidden)
 
-        return last_hidden,output
-
-
-class XLSRAASIST(nn.Module):
-    def __init__(self, model_dir, device='cuda', freeze = True, visual=False):
-        super(XLSRAASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.wav2vec2 = XLSR(
-            model_dir=model_dir,
-            device=device,
-            freeze=freeze,
-            visual=visual
-        )
-
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-        self.visual = visual
-    def forward(self, audio_data):
-        if self.visual:
-            features, attention_weights = self.wav2vec2.extract_features(audio_data)
-            last_hidden, output = self.w2vaasist(features)
-            return last_hidden, output, attention_weights
-        # Extract features using XLSRWithPrompt
-        features = self.wav2vec2.extract_features(audio_data)
-
-        # Pass the features through W2VAASIST
-        last_hidden, output = self.w2vaasist(features)
         return last_hidden, output
 
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.w2vaasist.train(mode)
-        else:
-            self.w2vaasist.eval()
 
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.wav2vec2.eval()   # important
-
-        
-class WAVLMAASIST(nn.Module):
-    def __init__(self, model_dir, device='cuda', freeze = True):
-        super(WAVLMAASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.wavlm = WAVLM(
-            model_dir=model_dir,
-            device=device,
-            freeze=freeze
-        )
-
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-
-    def forward(self, audio_data):
-        # Extract features using XLSRWithPrompt
-        features = self.wavlm.extract_features(audio_data)
-
-        # Pass the features through W2VAASIST
-        last_hidden, output = self.w2vaasist(features)
-        return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.w2vaasist.train(mode)
-        else:
-            self.w2vaasist.eval()
-
-    def eval(self):
-        self.w2vaasist.eval()
-        self.wavlm.eval()   # important       
-
-
-# ---------------------------------------------------------------------------
-# Feature-fusion modules for dual-SSL models
-# ---------------------------------------------------------------------------
+# =============================================================================
+# Feature-fusion modules for dual-SSL models  
+# =============================================================================
 
 class CatLinearFusion(nn.Module):
     """Concatenate both feature streams then project: [x ; y] -> Linear(out_dim)."""
@@ -841,356 +753,209 @@ def build_fusion_module(name: str, dim_x: int, dim_y: int, out_dim: int) -> nn.M
     return _FUSION_CLASSES[name](dim_x, dim_y, out_dim)
 
 
-# ---------------------------------------------------------------------------
+# =============================================================================
+# Feature-alignment helpers for dual-SSL models
+# =============================================================================
 
-class XLSRWAVLMAASIST(nn.Module):
+def _clap_preprocess(features: torch.Tensor) -> torch.Tensor:
+    """CLAP raw output [B, C, F, T] → frame-level sequence [B, T, C]."""
+    return features.mean(dim=2).permute(0, 2, 1)
+
+
+def _align_clap_to_xlsr(xlsr_feat: torch.Tensor, clap_raw: torch.Tensor):
     """
-    Dual-SSL fusion:
-    audio -> XLSR + WavLM -> fuse features -> AASIST classifier
+    Preprocess CLAP [B, C, F, T] → [B, T_clap, C], then interpolate
+    T_clap → T_xlsr to match the XLSR frame sequence.
 
-    Supported fusion methods (--fusion):
-      cat_linear  : concatenate then Linear projection (default)
-      gated       : soft gate interpolation between the two projections
-      cross_attn  : bidirectional cross-attention with residual + LayerNorm
-      film        : Feature-wise Linear Modulation (WavLM modulates XLSR)
-      type_aware  : dynamic per-type weights with auxiliary type-classification
-                    loss (access side-channel via model._last_type_logits)
+    Returns (xlsr_feat, clap_aligned), both [B, T_xlsr, 1024].
     """
-    def __init__(self, xlsr_model_dir, wavlm_model_dir, device='cuda',
-                 freeze=True, visual=False, fusion='cat_linear'):
-        super(XLSRWAVLMAASIST, self).__init__()
+    clap_feat = clap_raw.mean(dim=2).permute(0, 2, 1)           # [B, T_clap, 1024]
+    T = xlsr_feat.size(1)
+    clap_aligned = F.interpolate(
+        clap_feat.permute(0, 2, 1),                              # [B, 1024, T_clap]
+        size=T, mode='linear', align_corners=False,
+    ).permute(0, 2, 1)                                           # [B, T_xlsr, 1024]
+    return xlsr_feat, clap_aligned
 
-        self.xlsr = XLSR(
-            model_dir=xlsr_model_dir,
-            device=device,
-            freeze=freeze,
-            visual=visual,
+
+# =============================================================================
+# Generic frontend-backend wrappers
+# =============================================================================
+
+class SingleSSLModel(nn.Module):
+    """
+    Composable single-frontend + backend detector.
+
+    Any feature extractor with an ``extract_features(audio) -> Tensor`` method
+    can be paired with any backend accepting ``(B, T, D)`` and returning
+    ``(hidden, logits)``.
+
+    The ``train()`` override ensures that a frozen frontend stays in eval mode
+    even while the rest of the model trains — consistent with the fine-tuning
+    and prompt-tuning strategies used throughout this project.
+
+    Args:
+        frontend (nn.Module): Waveform-to-feature encoder.  Must have a
+            boolean ``freeze`` attribute for correct train/eval management.
+        backend (nn.Module): Sequence classifier, e.g. ``SSLAASIST``.
+        feat_preprocess (callable, optional): Applied to frontend output
+            *before* the backend, e.g. ``_clap_preprocess`` for CLAP.
+        visual (bool): When True, ``forward`` returns
+            ``(hidden, logits, attn_weights)`` for analysis.
+
+    Example::
+
+        model = SingleSSLModel(
+            frontend=XLSR(model_dir="...", freeze=False),
+            backend=SSLAASIST(in_dim=1024),
         )
-        self.wavlm = WAVLM(
-            model_dir=wavlm_model_dir,
-            device=device,
-            freeze=freeze,
-        )
-        # XLSR-300M and WavLM-Large are both 1024-d; fuse to 1024 for SSLAASIST.
-        self.fusion_module = build_fusion_module(fusion, 1024, 1024, 1024)
-        self.w2vaasist = SSLAASIST(in_dim=1024)
+    """
+
+    def __init__(
+        self,
+        frontend: nn.Module,
+        backend: nn.Module,
+        feat_preprocess: Optional[Callable] = None,
+        visual: bool = False,
+    ):
+        super().__init__()
+        self.frontend = frontend
+        self.backend = backend
+        self.feat_preprocess = feat_preprocess
         self.visual = visual
-        # Side-channel: set by _fuse_features when fusion == 'type_aware'.
+
+    def forward(self, audio_data):
+        if self.visual:
+            extracted = self.frontend.extract_features(audio_data)
+            if isinstance(extracted, tuple):
+                # (feat, attn)  or  (first_hidden, feat, attn) for PT models
+                feat = extracted[1] if len(extracted) >= 3 else extracted[0]
+                attn = extracted[-1]
+            else:
+                feat, attn = extracted, None
+        else:
+            extracted = self.frontend.extract_features(audio_data)
+            # Some frontends may return (feat, hidden_states) tuples
+            feat = extracted[0] if isinstance(extracted, tuple) else extracted
+
+        if self.feat_preprocess is not None:
+            feat = self.feat_preprocess(feat)
+
+        hidden, out = self.backend(feat)
+        if self.visual:
+            return hidden, out, attn
+        return hidden, out
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        # Keep frozen frontends in eval mode during training
+        if mode and hasattr(self.frontend, 'freeze') and self.frontend.freeze:
+            self.frontend.eval()
+        return self
+
+
+class DualSSLModel(nn.Module):
+    """
+    Composable dual-frontend + fusion + backend detector.
+
+    Two encoders independently extract features from the same waveform; their
+    frame sequences are aligned in time, fused by ``fusion_module``, and then
+    passed to ``backend``.  All fusion strategies in ``build_fusion_module``
+    are supported.
+
+    The side-channel ``model._last_type_logits`` is populated when
+    ``TypeAwareFusion`` is active, allowing the caller to compute the auxiliary
+    type-classification loss.
+
+    Args:
+        frontend_a, frontend_b (nn.Module): Feature extractors with
+            ``extract_features`` and boolean ``freeze`` attributes.
+        fusion_module (nn.Module): Combines the two feature sequences, e.g.
+            ``build_fusion_module('cat_linear', 1024, 1024, 1024)``.
+        backend (nn.Module): Sequence classifier, e.g. ``SSLAASIST``.
+        feat_align_fn (callable, optional):
+            ``(feat_a, feat_b) -> (feat_a, feat_b)`` applied *before* fusion.
+            Use ``_align_clap_to_xlsr`` when one encoder outputs a 4-D map.
+        visual (bool): When True, ``forward`` returns
+            ``(hidden, logits, attn_weights)`` for analysis.
+
+    Example::
+
+        model = DualSSLModel(
+            frontend_a=XLSR(model_dir="...", freeze=False),
+            frontend_b=MERT(model_dir="...", freeze=False),
+            fusion_module=build_fusion_module('cat_linear', 1024, 1024, 1024),
+            backend=SSLAASIST(in_dim=1024),
+        )
+    """
+
+    def __init__(
+        self,
+        frontend_a: nn.Module,
+        frontend_b: nn.Module,
+        fusion_module: nn.Module,
+        backend: nn.Module,
+        feat_align_fn: Optional[Callable] = None,
+        visual: bool = False,
+    ):
+        super().__init__()
+        self.frontend_a = frontend_a
+        self.frontend_b = frontend_b
+        self.fusion_module = fusion_module
+        self.backend = backend
+        self.feat_align_fn = feat_align_fn
+        self.visual = visual
         self._last_type_logits = None
 
-    def _fuse_features(self, xlsr_feat, wavlm_feat):
-        # Be robust to small sequence-length mismatches.
-        t = min(xlsr_feat.size(1), wavlm_feat.size(1))
-        xlsr_feat  = xlsr_feat[:, :t, :]
-        wavlm_feat = wavlm_feat[:, :t, :]
-        result = self.fusion_module(xlsr_feat, wavlm_feat)
+    def _align_and_fuse(self, feat_a: torch.Tensor, feat_b: torch.Tensor) -> torch.Tensor:
+        if self.feat_align_fn is not None:
+            feat_a, feat_b = self.feat_align_fn(feat_a, feat_b)
+        else:
+            # Default: truncate to the shorter sequence length
+            t = min(feat_a.size(1), feat_b.size(1))
+            feat_a = feat_a[:, :t, :]
+            feat_b = feat_b[:, :t, :]
+        result = self.fusion_module(feat_a, feat_b)
         if isinstance(result, tuple):
             fused, self._last_type_logits = result
         else:
             fused = result
             self._last_type_logits = None
-        return fused  # (B, T, 1024)
-
-    def forward(self, audio_data):
-        if self.visual:
-            xlsr_feat, attention_weights = self.xlsr.extract_features(audio_data)
-        else:
-            xlsr_feat = self.xlsr.extract_features(audio_data)
-
-        wavlm_feat = self.wavlm.extract_features(audio_data)
-        fused_feat = self._fuse_features(xlsr_feat, wavlm_feat)
-        last_hidden, output = self.w2vaasist(fused_feat)
-
-        if self.visual:
-            return last_hidden, output, attention_weights
-        return last_hidden, output
-
-    def train(self, mode=True):
-        if mode:
-            self.w2vaasist.train(mode)
-        else:
-            self.w2vaasist.eval()
-
-    def eval(self):
-        self.w2vaasist.eval()
-        self.xlsr.eval()
-        self.wavlm.eval()
-
-
-class XLSRBEATSAASIST(nn.Module):
-    """
-    Dual-encoder fusion:
-    audio -> XLSR + BEATs -> concat features -> linear fusion -> AASIST classifier
-    (BEATs last hidden is 768-d, same as standalone BEATs_AASIST.)
-    """
-    def __init__(self, xlsr_model_dir, beats_model_dir, device='cuda', freeze=True, visual=False):
-        super(XLSRBEATSAASIST, self).__init__()
-
-        self.xlsr = XLSR(
-            model_dir=xlsr_model_dir,
-            device=device,
-            freeze=freeze,
-            visual=visual,
-        )
-        self.beats = BEATs(
-            model_dir=beats_model_dir,
-            device=device,
-            freeze=freeze,
-        )
-        # 1024 (XLSR) + 768 (BEATs) -> 1024 for SSLAASIST
-        self.fuse_proj = nn.Linear(1024 + 768, 1024)
-        self.w2vaasist = SSLAASIST(in_dim=1024)
-        self.visual = visual
-
-    def _fuse_features(self, xlsr_feat, beats_feat):
-        t = min(xlsr_feat.size(1), beats_feat.size(1))
-        if xlsr_feat.size(1) != t:
-            xlsr_feat = xlsr_feat[:, :t, :]
-        if beats_feat.size(1) != t:
-            beats_feat = beats_feat[:, :t, :]
-        fused = torch.cat([xlsr_feat, beats_feat], dim=-1)
-        fused = self.fuse_proj(fused)
         return fused
 
     def forward(self, audio_data):
         if self.visual:
-            xlsr_feat, attention_weights = self.xlsr.extract_features(audio_data)
+            extracted_a = self.frontend_a.extract_features(audio_data)
+            if isinstance(extracted_a, tuple):
+                feat_a, attn = extracted_a[0], extracted_a[-1]
+            else:
+                feat_a, attn = extracted_a, None
         else:
-            xlsr_feat = self.xlsr.extract_features(audio_data)
+            feat_a = self.frontend_a.extract_features(audio_data)
 
-        beats_feat = self.beats.extract_features(audio_data)
-        fused_feat = self._fuse_features(xlsr_feat, beats_feat)
-        last_hidden, output = self.w2vaasist(fused_feat)
+        feat_b = self.frontend_b.extract_features(audio_data)
+        fused = self._align_and_fuse(feat_a, feat_b)
+        hidden, out = self.backend(fused)
 
         if self.visual:
-            return last_hidden, output, attention_weights
-        return last_hidden, output
+            return hidden, out, attn
+        return hidden, out
 
-    def train(self, mode=True):
+    def train(self, mode: bool = True):
         super().train(mode)
-        if mode:
-            if self.xlsr.freeze:
-                self.xlsr.eval()
-            if self.beats.freeze:
-                self.beats.eval()
+        for fe in (self.frontend_a, self.frontend_b):
+            if mode and hasattr(fe, 'freeze') and fe.freeze:
+                fe.eval()
         return self
 
-    def eval(self):
-        return super().eval()
 
+# =============================================================================
+# Standalone models with non-standard interfaces
+# =============================================================================
 
-class XLSRMERTAASIST(nn.Module):
-    """
-    Dual-SSL fusion:
-    audio -> XLSR + MERT -> fuse features -> AASIST classifier
-    (XLSR-300M and MERT-v1-330M are both 1024-d frame features.)
-
-    Supported fusion methods (--fusion):
-      cat_linear  : concatenate then Linear projection (default)
-      gated       : soft gate interpolation between the two projections
-      cross_attn  : bidirectional cross-attention with residual + LayerNorm
-      film        : Feature-wise Linear Modulation (MERT modulates XLSR)
-      type_aware  : dynamic per-type weights with auxiliary type-classification
-                    loss (access side-channel via model._last_type_logits)
-    """
-    def __init__(self, xlsr_model_dir, mert_model_dir, device='cuda',
-                 freeze=True, visual=False, fusion='cat_linear'):
-        super(XLSRMERTAASIST, self).__init__()
-
-        self.xlsr = XLSR(
-            model_dir=xlsr_model_dir,
-            device=device,
-            freeze=freeze,
-            visual=visual,
-        )
-        self.mert = MERT(
-            model_dir=mert_model_dir,
-            device=device,
-            freeze=freeze,
-        )
-        # XLSR-300M and MERT-v1-330M are both 1024-d; fuse to 1024 for SSLAASIST.
-        self.fusion_module = build_fusion_module(fusion, 1024, 1024, 1024)
-        self.w2vaasist = SSLAASIST(in_dim=1024)
-        self.visual = visual
-        # Side-channel: set by _fuse_features when fusion == 'type_aware'.
-        self._last_type_logits = None
-
-    def _fuse_features(self, xlsr_feat, mert_feat):
-        # Be robust to small sequence-length mismatches.
-        t = min(xlsr_feat.size(1), mert_feat.size(1))
-        xlsr_feat = xlsr_feat[:, :t, :]
-        mert_feat = mert_feat[:, :t, :]
-        result = self.fusion_module(xlsr_feat, mert_feat)
-        if isinstance(result, tuple):
-            fused, self._last_type_logits = result
-        else:
-            fused = result
-            self._last_type_logits = None
-        return fused  # (B, T, 1024)
-
-    def forward(self, audio_data):
-        if self.visual:
-            xlsr_feat, attention_weights = self.xlsr.extract_features(audio_data)
-        else:
-            xlsr_feat = self.xlsr.extract_features(audio_data)
-
-        mert_feat = self.mert.extract_features(audio_data)
-        fused_feat = self._fuse_features(xlsr_feat, mert_feat)
-        last_hidden, output = self.w2vaasist(fused_feat)
-
-        if self.visual:
-            return last_hidden, output, attention_weights
-        return last_hidden, output
-
-    def train(self, mode=True):
-        super().train(mode)
-        if mode:
-            if self.xlsr.freeze:
-                self.xlsr.eval()
-            if self.mert.freeze:
-                self.mert.eval()
-        return self
-
-    def eval(self):
-        return super().eval()
-
-
-class XLSRCLAPAASIST(nn.Module):
-    """
-    Dual-SSL fusion: XLSR-300M + CLAP (HTSAT) → AASIST classifier
-
-    CLAP's HTSAT audio encoder outputs spatial feature maps [B, 1024, 2, 32].
-    They are frequency-averaged and then temporally interpolated to match
-    XLSR's frame-level sequence length before the two streams are fused.
-
-    Both encoders output 1024-d features, so all fusion strategies that work
-    for XLSR+MERT apply here as well (default: cat_linear).
-
-    Supported fusion methods (--fusion):
-      cat_linear  : concatenate then Linear projection (default)
-      gated       : soft gate interpolation
-      cross_attn  : bidirectional cross-attention with residual + LayerNorm
-      film        : Feature-wise Linear Modulation (CLAP modulates XLSR)
-      type_aware  : dynamic per-type weights with auxiliary type-clf loss
-      proj512_cat : project each stream to 512 then concatenate → 1024
-      add         : element-wise addition (requires dim_x == dim_y == out_dim)
-    """
-    def __init__(self, xlsr_model_dir, clap_model_dir, device='cuda',
-                 freeze=True, visual=False, fusion='cat_linear'):
-        super().__init__()
-
-        self.xlsr = XLSR(
-            model_dir=xlsr_model_dir,
-            device=device,
-            freeze=freeze,
-            visual=visual,
-        )
-        self.clap = CLAP(
-            model_dir=clap_model_dir,
-            device=device,
-            freeze=freeze,
-        )
-        # XLSR-300M → 1024-d;  CLAP/HTSAT → 1024-d after freq pooling
-        self.fusion_module = build_fusion_module(fusion, 1024, 1024, 1024)
-        self.w2vaasist = SSLAASIST(in_dim=1024)
-        self.visual = visual
-        # Side-channel for TypeAwareFusion auxiliary loss
-        self._last_type_logits = None
-
-    @staticmethod
-    def _process_clap(raw):
-        """Convert raw CLAP output [B, 1024, F, T_clap] → [B, T_clap, 1024]."""
-        x = raw.mean(dim=2)       # [B, 1024, T_clap]  (avg over freq)
-        return x.permute(0, 2, 1) # [B, T_clap, 1024]
-
-    def _fuse_features(self, xlsr_feat, clap_feat):
-        """
-        xlsr_feat : [B, T_xlsr, 1024]
-        clap_feat : [B, T_clap, 1024]  (T_clap ≈ 32, T_xlsr ≈ 300+)
-
-        CLAP is interpolated along the time axis to match XLSR's length.
-        """
-        T = xlsr_feat.size(1)
-        # linear interpolation: [B, 1024, T_clap] → [B, 1024, T] → [B, T, 1024]
-        clap_interp = F.interpolate(
-            clap_feat.permute(0, 2, 1),
-            size=T,
-            mode='linear',
-            align_corners=False,
-        ).permute(0, 2, 1)
-
-        result = self.fusion_module(xlsr_feat, clap_interp)
-        if isinstance(result, tuple):
-            fused, self._last_type_logits = result
-        else:
-            fused = result
-            self._last_type_logits = None
-        return fused  # [B, T, 1024]
-
-    def forward(self, audio_data):
-        if self.visual:
-            xlsr_feat, attention_weights = self.xlsr.extract_features(audio_data)
-        else:
-            xlsr_feat = self.xlsr.extract_features(audio_data)
-
-        clap_raw  = self.clap.extract_features(audio_data)   # [B, 1024, 2, 32]
-        clap_feat = self._process_clap(clap_raw)              # [B, 32, 1024]
-        fused_feat = self._fuse_features(xlsr_feat, clap_feat)
-
-        last_hidden, output = self.w2vaasist(fused_feat)
-        if self.visual:
-            return last_hidden, output, attention_weights
-        return last_hidden, output
-
-    def train(self, mode=True):
-        super().train(mode)
-        if mode:
-            if self.xlsr.freeze:
-                self.xlsr.eval()
-            if self.clap.freeze:
-                self.clap.eval()
-        return self
-
-    def eval(self):
-        return super().eval()
-
-
-class MERTAASIST(nn.Module):
-    def __init__(self, model_dir, device='cuda',freeze = True):
-        super(MERTAASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.MERT = MERT(
-            model_dir=model_dir,
-            device=device,
-            freeze=freeze
-        )
-
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-
-    def forward(self, audio_data):
-        # Extract features using XLSRWithPrompt
-        features = self.MERT.extract_features(audio_data)
-
-        # Pass the features through W2VAASIST
-        last_hidden, output = self.w2vaasist(features)
-        return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.w2vaasist.train(mode)
-        else:
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.MERT.eval()
- 
-        
 class ResNet18ForAudio(nn.Module):
+    """Mel-spectrogram + ResNet-18 baseline (conventional CM, no SSL)."""
+
     def __init__(self, enc_dim=256, nclasses=2):
         super(ResNet18ForAudio, self).__init__()
 
@@ -1218,337 +983,15 @@ class ResNet18ForAudio(nn.Module):
     def forward(self, x):
         x = self.spec(x.cuda().float()).unsqueeze(dim=1)
         x = self.resnet18(x)
-        x = x.view(x.size(0), -1)  
+        x = x.view(x.size(0), -1)
         feat = self.fc(x)
         mu = self.fc_mu(feat)
         return feat, mu
-    
-class PTW2V2AASIST(nn.Module):
-    def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=10, dropout=0.1, visual=False):
-        super(PTW2V2AASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.wav2vec2_with_prompt = PT_XLSR(
-            model_dir=model_dir,
-            prompt_dim=prompt_dim,
-            device=device,
-            sampling_rate=sampling_rate,
-            num_prompt_tokens=num_prompt_tokens,
-            dropout=dropout,
-            visual=visual
-        )
-        self.visual = visual
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-
-    def forward(self, audio_data):
-        if self.visual:
-            features, attention_weights = self.wav2vec2_with_prompt.extract_features(audio_data)
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output, attention_weights
-        else:
-            features = self.wav2vec2_with_prompt.extract_features(audio_data)
-        # Pass the features through W2VAASIST
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.wav2vec2_with_prompt.train(mode)
-            self.w2vaasist.train(mode)
-        else:
-            self.wav2vec2_with_prompt.eval()
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.wav2vec2_with_prompt.eval()
-
-class PTW2V2AASIST(nn.Module):
-    def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=10, dropout=0.1, visual=False):
-        super(PTW2V2AASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.wav2vec2_with_prompt = PT_XLSR(
-            model_dir=model_dir,
-            prompt_dim=prompt_dim,
-            device=device,
-            sampling_rate=sampling_rate,
-            num_prompt_tokens=num_prompt_tokens,
-            dropout=dropout,
-            visual=visual
-        )
-        self.visual = visual
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-
-    def forward(self, audio_data):
-        if self.visual:
-            first_hidden, features,  attention_weights = self.wav2vec2_with_prompt.extract_features(audio_data)
-            last_hidden, output = self.w2vaasist(features)
-        
-            return first_hidden, output, attention_weights
-        else:
-            features = self.wav2vec2_with_prompt.extract_features(audio_data)
-        # Pass the features through W2VAASIST
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.wav2vec2_with_prompt.train(mode)
-            self.w2vaasist.train(mode)
-        else:
-            self.wav2vec2_with_prompt.eval()
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.wav2vec2_with_prompt.eval()
-
-
-class PTWAVLMAASIST(nn.Module):
-    def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=10, dropout=0.1, visual=False):
-        super(PTWAVLMAASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.wav2vec2_with_prompt = PT_WAVLM(
-            model_dir=model_dir,
-            prompt_dim=prompt_dim,
-            device=device,
-            sampling_rate=sampling_rate,
-            num_prompt_tokens=num_prompt_tokens,
-            dropout=dropout,
-            visual=visual
-        )
-        self.visual = visual
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-
-    def forward(self, audio_data):
-        if self.visual:
-            features, attention_weights = self.wav2vec2_with_prompt.extract_features(audio_data)
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output, attention_weights
-        else:
-            features = self.wav2vec2_with_prompt.extract_features(audio_data)
-        # Pass the features through W2VAASIST
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.wav2vec2_with_prompt.train(mode)
-            self.w2vaasist.train(mode)
-        else:
-            self.wav2vec2_with_prompt.eval()
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.wav2vec2_with_prompt.eval()
-
-class PTMERTAASIST(nn.Module):
-    def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=10, dropout=0.1, visual=False):
-        super(PTMERTAASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.wav2vec2_with_prompt = PT_MERT(
-            model_dir=model_dir,
-            prompt_dim=prompt_dim,
-            device=device,
-            sampling_rate=sampling_rate,
-            num_prompt_tokens=num_prompt_tokens,
-            dropout=dropout,
-            visual=visual
-        )
-        self.visual = visual
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-
-    def forward(self, audio_data):
-        if self.visual:
-            features, attention_weights = self.wav2vec2_with_prompt.extract_features(audio_data)
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output, attention_weights
-        else:
-            features = self.wav2vec2_with_prompt.extract_features(audio_data)
-        # Pass the features through W2VAASIST
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.wav2vec2_with_prompt.train(mode)
-            self.w2vaasist.train(mode)
-        else:
-            self.wav2vec2_with_prompt.eval()
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.wav2vec2_with_prompt.eval()
-
-class WPTW2V2AASIST(nn.Module):
-    def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=5, num_wavelet_tokens=6, dropout=0.1, visual=False):
-        super(WPTW2V2AASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.wav2vec2_with_prompt = WPT_XLSR(
-            model_dir=model_dir,
-            prompt_dim=prompt_dim,
-            device=device,
-            sampling_rate=sampling_rate,
-            num_prompt_tokens=num_prompt_tokens,
-            num_wavelet_tokens= num_wavelet_tokens,
-            dropout=dropout,
-            visual=visual
-        )
-        self.visual = visual
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-
-    def forward(self, audio_data):
-        # Extract features using XLSRWithPrompt
-        if self.visual:
-            features, attention_weights = self.wav2vec2_with_prompt.extract_features(audio_data)
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output, attention_weights
-        else:
-            features = self.wav2vec2_with_prompt.extract_features(audio_data)
-        # Pass the features through W2VAASIST
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.wav2vec2_with_prompt.train(mode)
-            self.w2vaasist.train(mode)
-        else:
-            self.wav2vec2_with_prompt.eval()
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.wav2vec2_with_prompt.eval()
-
-class WPTWAVLMAASIST(nn.Module):
-    def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=5, num_wavelet_tokens=6, dropout=0.1, visual=False):
-        super(WPTWAVLMAASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.wav2vec2_with_prompt = WPT_WAVLM(
-            model_dir=model_dir,
-            prompt_dim=prompt_dim,
-            device=device,
-            sampling_rate=sampling_rate,
-            num_prompt_tokens=num_prompt_tokens,
-            num_wavelet_tokens= num_wavelet_tokens,
-            dropout=dropout,
-            visual=visual
-        )
-        self.visual = visual
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-
-    def forward(self, audio_data):
-        # Extract features using XLSRWithPrompt
-        if self.visual:
-            features, attention_weights = self.wav2vec2_with_prompt.extract_features(audio_data)
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output, attention_weights
-        else:
-            features = self.wav2vec2_with_prompt.extract_features(audio_data)
-        # Pass the features through W2VAASIST
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.wav2vec2_with_prompt.train(mode)
-            self.w2vaasist.train(mode)
-        else:
-            self.wav2vec2_with_prompt.eval()
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.wav2vec2_with_prompt.eval()
-
-class WPTMERTAASIST(nn.Module):
-    def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=5, num_wavelet_tokens=6, dropout=0.1, visual=False):
-        super(WPTMERTAASIST, self).__init__()
-
-        # Initialize XLSRWithPrompt (features extractor)
-        self.wav2vec2_with_prompt = WPT_MERT(
-            model_dir=model_dir,
-            prompt_dim=prompt_dim,
-            device=device,
-            sampling_rate=sampling_rate,
-            num_prompt_tokens=num_prompt_tokens,
-            num_wavelet_tokens= num_wavelet_tokens,
-            dropout=dropout,
-            visual=visual
-        )
-        self.visual = visual
-        # Initialize W2VAASIST (main model)
-        self.w2vaasist = SSLAASIST()
-
-    def forward(self, audio_data):
-        # Extract features using XLSRWithPrompt
-        if self.visual:
-            features, attention_weights = self.wav2vec2_with_prompt.extract_features(audio_data)
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output, attention_weights
-        else:
-            features = self.wav2vec2_with_prompt.extract_features(audio_data)
-        # Pass the features through W2VAASIST
-            last_hidden, output = self.w2vaasist(features)
-        
-            return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.wav2vec2_with_prompt.train(mode)
-            self.w2vaasist.train(mode)
-        else:
-            self.wav2vec2_with_prompt.eval()
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.wav2vec2_with_prompt.eval()
-
-#------------------------------------------------------------------------------------------
 
 
 class SLS(nn.Module):
+    """Layer-weighted SSL backend (requires the full hidden-state sequence)."""
+
     def __init__(self, device):
         super().__init__()
         self.device = device
@@ -1557,30 +1000,28 @@ class SLS(nn.Module):
         self.fc0 = nn.Linear(1024, 1)
         self.sig = nn.Sigmoid()
         self.fc1 = nn.Linear(22847, 1024)
-        self.fc3 = nn.Linear(1024,2)
+        self.fc3 = nn.Linear(1024, 2)
         self.logsoftmax = nn.LogSoftmax(dim=1)
 
-    def getAttenF(self, layerResult): # layerresult = [24] (B, Frame, Dim)
+    def getAttenF(self, layerResult):  # layerresult = [24] (B, Frame, Dim)
         poollayerResult = []
         fullf = []
         for layer in layerResult:
-            # layery = layer[0].transpose(0, 1).transpose(1, 2)
-            layery = layer.transpose(1, 2) # (B, Frame, Dim) -> (B, Dim, Frame)
-            layery = F.adaptive_avg_pool1d(layery, 1) # 作用在最后一个维度,1表示最后一个维度的输出size, (b, Dim, 1)
-            layery = layery.transpose(1, 2) 
+            layery = layer.transpose(1, 2)  # (B, Frame, Dim) -> (B, Dim, Frame)
+            layery = F.adaptive_avg_pool1d(layery, 1)
+            layery = layery.transpose(1, 2)
             poollayerResult.append(layery)
 
-            # x = layer[0].transpose(0, 1)
-            x = layer # (B, Frame, Dim)
-            x = x.view(x.size(0), -1,x.size(1), x.size(2))
+            x = layer  # (B, Frame, Dim)
+            x = x.view(x.size(0), -1, x.size(1), x.size(2))
             fullf.append(x)
 
         layery = torch.cat(poollayerResult, dim=1)
         fullfeature = torch.cat(fullf, dim=1)
         return layery, fullfeature
 
-    def forward(self, layerResult): #layerresult = [25] (B, Frame, Dim)
-        layerResult = layerResult[1:] #第一层是embedding_output
+    def forward(self, layerResult):  # layerresult = [25] (B, Frame, Dim)
+        layerResult = layerResult[1:]  # skip embedding_output
         y0, fullfeature = self.getAttenF(layerResult)
         y0 = self.fc0(y0)
         y0 = self.sig(y0)
@@ -1597,139 +1038,335 @@ class SLS(nn.Module):
         x = self.fc3(x)
         x = self.selu(x)
         output = self.logsoftmax(x)
-
         return x, output
 
+
 class XLSR_SLS(nn.Module):
+    """
+    XLSR with layer-wise SLS backend.
+
+    This model uses the full hidden-state sequence from all transformer layers
+    (not just the last-layer output), so it cannot use the standard
+    ``SingleSSLModel`` interface.
+    """
+
     def __init__(self, model_dir, device='cuda', freeze=True, visual=False):
-        super(XLSR_SLS, self).__init__()
+        super().__init__()
         self.wav2vec2 = XLSR(
             model_dir=model_dir,
             device=device,
             freeze=freeze,
             visual=visual,
-            return_hidden_states=True
+            return_hidden_states=True,
         )
-
         self.sls = SLS(device=device)
         self.visual = visual
+
     def forward(self, audio_data):
         if self.visual:
             features, attention_weights, hidden_states = self.wav2vec2.extract_features(audio_data)
-            last_hidden, output  = self.sls(hidden_states)
+            last_hidden, output = self.sls(hidden_states)
             return last_hidden, output, attention_weights
-        
+
         features, hidden_states = self.wav2vec2.extract_features(audio_data)
-        # hidden_states [25] (B, Frame, Dim)
         last_hidden, output = self.sls(hidden_states)
         return last_hidden, output
 
     def train(self, mode=True):
-        # Set train status for both components
         if mode:
             self.sls.train(mode)
         else:
             self.sls.eval()
 
     def eval(self):
-        # Set eval status for both components
         self.sls.eval()
-        self.wav2vec2.eval()   # important
+        self.wav2vec2.eval()
 
-#---------------------------------------------------------------------------
-class BEATs_AASIST(nn.Module):
-    def __init__(self, model_dir, device='cuda', freeze = True):
-        super(BEATs_AASIST, self).__init__()
 
-        # Initialize XLSRWithPrompt (features extractor)
-        self.beats = BEATs(
-            model_dir=model_dir,
-            device=device,
-            freeze=freeze
+# =============================================================================
+# Model registry and factory
+# =============================================================================
+
+_MODEL_REGISTRY: dict = {}
+
+
+def register_model(name: str):
+    """
+    Decorator that registers a model factory function under ``name``.
+
+    The decorated function must have signature ``(args) -> nn.Module`` and
+    return the model on CPU (the caller moves it to the target device).
+
+    Example::
+
+        @register_model('my-new-model')
+        def _build_my_model(args):
+            return SingleSSLModel(
+                frontend=XLSR(model_dir=args.xlsr, freeze=False),
+                backend=SSLAASIST(in_dim=1024),
+            )
+    """
+    def _decorator(fn):
+        _MODEL_REGISTRY[name] = fn
+        return fn
+    return _decorator
+
+
+def build_model(args) -> nn.Module:
+    """
+    Build and return a model from ``args.model``.
+
+    The returned model is on CPU; move it to the target device afterwards::
+
+        model = build_model(args).to(args.device)
+
+    Args:
+        args: Parsed argument namespace.  Must contain at minimum ``args.model``
+              and any model-specific fields (``args.xlsr``, ``args.wavlm``, …).
+
+    Raises:
+        ValueError: If ``args.model`` is not in the registry.
+    """
+    name = args.model
+    if name not in _MODEL_REGISTRY:
+        raise ValueError(
+            f"Unknown model '{name}'. "
+            f"Available models: {sorted(_MODEL_REGISTRY.keys())}"
         )
-
-        # Initialize AASIST (main model)
-        self.w2vaasist = SSLAASIST(in_dim=768)
-
-    def forward(self, audio_data):
-        # Extract features using XLSRWithPrompt
-        features = self.beats.extract_features(audio_data)
-
-        # Pass the features through BEATs_AASIST
-        last_hidden, output = self.w2vaasist(features)
-        return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.w2vaasist.train(mode)
-        else:
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.w2vaasist.eval()
-        self.beats.eval()   # important
-
-#---------------------------------------------------------------------------
-class CLAP_AASIST(nn.Module):
-    def __init__(self, model_dir, device='cuda', freeze=True):
-        super(CLAP_AASIST, self).__init__()
-
-        # Initialize CLAP (features extractor)
-        self.clap_output_dim = 1024 
-        self.clap = CLAP(
-            model_dir=model_dir,
-            device=device,
-            freeze=freeze
-        )
-
-        # Initialize AASIST (main model)
-        self.w2vaasist = SSLAASIST(in_dim=self.clap_output_dim)
-
-    def forward(self, audio_data):
-        features = self.clap.extract_features(audio_data)
-        # features [B, 1024, 2, 32]
-        # ├── 40   = Batch size
-        # ├── 1024 =特征通道数（最后一个Stage的维度）
-        # ├── 2    = 频率维度（Mel频率bins经过4次下采样后）
-        # └── 32   = 时间维度（时间帧经过4次下采样后）
-        B, C, F, T = features.shape
-
-        # 方法1 只保留时间维度（对齐XLSR语义），对频率维度做平均池化，只保留时间维度
-        # [B, C, F, T] → [B, C, T] → [B, T, C]
-        features = features.mean(dim=2)       # [B, C, T]  [40, 1024, 32]
-        features = features.permute(0, 2, 1)  # [B, T, C]  [40, 32, 1024]
-
-        # 方法2 Reshape转换, 未尝试
-        # [B, C, F, T] → [B, C, F*T] → [B, F*T, C]
-        # features = features.flatten(2)# [B, C, F*T]  [40, 1024, 64]
-        # features = features.permute(0, 2, 1) # [B, T', C]
-
-        last_hidden, output = self.w2vaasist(features)
-        return last_hidden, output
-
-    def train(self, mode=True):
-        # Set train status for both components
-        if mode:
-            self.w2vaasist.train(mode)
-        else:
-            self.w2vaasist.eval()
-
-    def eval(self):
-        # Set eval status for both components
-        self.clap.eval()
-        self.w2vaasist.eval()
-
-#---------------------------------------------------------------------------
+    return _MODEL_REGISTRY[name](args)
 
 
-#---------------------------------------------------------------------------
-if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
-    model = XLSRAASIST(model_dir="yourpath/huggingface/wav2vec2-xls-r-300m/",freeze=True).cuda()
-    feat, mu = model(feature)
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    trainable_params_in_million = trainable_params / 1e6
-    print(f"Trainable parameters (in million): {trainable_params_in_million:.2f}M")
+# ── private helpers ───────────────────────────────────────────────────────────
 
+def _dev(args) -> str:
+    """Return device string from args."""
+    return str(getattr(args, 'device', 'cuda'))
+
+
+def _fusion(args) -> str:
+    """Return fusion method name from args (default: cat_linear)."""
+    return getattr(args, 'fusion', 'cat_linear')
+
+
+# ── Conventional CM ───────────────────────────────────────────────────────────
+
+@register_model('aasist')
+def _build_aasist(args):
+    return Rawaasist()
+
+
+@register_model('specresnet')
+def _build_specresnet(args):
+    return ResNet18ForAudio()
+
+
+# ── Frozen (FR) SSL + AASIST ─────────────────────────────────────────────────
+
+@register_model('fr-w2v2aasist')
+def _build_fr_w2v2aasist(args):
+    return SingleSSLModel(
+        frontend=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=True),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('fr-wavlmaasist')
+def _build_fr_wavlmaasist(args):
+    return SingleSSLModel(
+        frontend=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=True),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('fr-mertaasist')
+def _build_fr_mertaasist(args):
+    return SingleSSLModel(
+        frontend=MERT(model_dir=args.mert, device=_dev(args), freeze=True),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+# ── Fine-tuned (FT) single-SSL + AASIST ──────────────────────────────────────
+
+@register_model('ft-w2v2aasist')
+def _build_ft_w2v2aasist(args):
+    return SingleSSLModel(
+        frontend=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('ft-wavlmaasist')
+def _build_ft_wavlmaasist(args):
+    return SingleSSLModel(
+        frontend=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=False),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('ft-mertaasist')
+def _build_ft_mertaasist(args):
+    return SingleSSLModel(
+        frontend=MERT(model_dir=args.mert, device=_dev(args), freeze=False),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('ft-beats_aasist')
+def _build_ft_beats_aasist(args):
+    # BEATs encoder stays frozen; only the AASIST head is fine-tuned
+    return SingleSSLModel(
+        frontend=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
+        backend=SSLAASIST(in_dim=768),
+    )
+
+
+@register_model('ft-clap_aasist')
+def _build_ft_clap_aasist(args):
+    return SingleSSLModel(
+        frontend=CLAP(model_dir=args.clap, device=_dev(args), freeze=False),
+        backend=SSLAASIST(in_dim=1024),
+        feat_preprocess=_clap_preprocess,
+    )
+
+
+@register_model('ft-xlsr_sls')
+def _build_ft_xlsr_sls(args):
+    return XLSR_SLS(model_dir=args.xlsr, device=_dev(args), freeze=False)
+
+
+# ── Fine-tuned (FT) dual-SSL + AASIST ────────────────────────────────────────
+
+@register_model('ft-xlsrwavlmaasist')
+def _build_ft_xlsrwavlmaasist(args):
+    return DualSSLModel(
+        frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+        frontend_b=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=False),
+        fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('ft-xlsrbeats_aasist')
+def _build_ft_xlsrbeats_aasist(args):
+    # BEATs output is 768-d; CatLinear(1024+768→1024) is the only valid fusion here.
+    # The --fusion argument is not applicable for this combination.
+    return DualSSLModel(
+        frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+        frontend_b=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
+        fusion_module=build_fusion_module(_fusion(args), 1024, 768, 1024),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('ft-xlsrmertaasist')
+def _build_ft_xlsrmertaasist(args):
+    return DualSSLModel(
+        frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+        frontend_b=MERT(model_dir=args.mert, device=_dev(args), freeze=False),
+        fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('ft-xlsrclapaasist')
+def _build_ft_xlsrclapaasist(args):
+    # CLAP outputs [B,C,F,T]; _align_clap_to_xlsr preprocesses + interpolates.
+    return DualSSLModel(
+        frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+        frontend_b=CLAP(model_dir=args.clap, device=_dev(args), freeze=False),
+        fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
+        backend=SSLAASIST(in_dim=1024),
+        feat_align_fn=_align_clap_to_xlsr,
+    )
+
+
+# ── Prompt-tuned (PT) SSL + AASIST ───────────────────────────────────────────
+
+@register_model('pt-w2v2aasist')
+def _build_pt_w2v2aasist(args):
+    return SingleSSLModel(
+        frontend=PT_XLSR(
+            model_dir=args.xlsr,
+            prompt_dim=args.prompt_dim,
+            device=_dev(args),
+            num_prompt_tokens=args.num_prompt_tokens,
+            dropout=args.pt_dropout,
+        ),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('pt-wavlmaasist')
+def _build_pt_wavlmaasist(args):
+    return SingleSSLModel(
+        frontend=PT_WAVLM(
+            model_dir=args.wavlm,
+            prompt_dim=args.prompt_dim,
+            device=_dev(args),
+            num_prompt_tokens=args.num_prompt_tokens,
+            dropout=args.pt_dropout,
+        ),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('pt-mertaasist')
+def _build_pt_mertaasist(args):
+    return SingleSSLModel(
+        frontend=PT_MERT(
+            model_dir=args.mert,
+            prompt_dim=args.prompt_dim,
+            device=_dev(args),
+            num_prompt_tokens=args.num_prompt_tokens,
+            dropout=args.pt_dropout,
+        ),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+# ── Wavelet Prompt-tuned (WPT) SSL + AASIST ──────────────────────────────────
+
+@register_model('wpt-w2v2aasist')
+def _build_wpt_w2v2aasist(args):
+    return SingleSSLModel(
+        frontend=WPT_XLSR(
+            model_dir=args.xlsr,
+            prompt_dim=args.prompt_dim,
+            device=_dev(args),
+            num_prompt_tokens=args.num_prompt_tokens,
+            num_wavelet_tokens=args.num_wavelet_tokens,
+            dropout=args.pt_dropout,
+        ),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('wpt-wavlmaasist')
+def _build_wpt_wavlmaasist(args):
+    return SingleSSLModel(
+        frontend=WPT_WAVLM(
+            model_dir=args.wavlm,
+            prompt_dim=args.prompt_dim,
+            device=_dev(args),
+            num_prompt_tokens=args.num_prompt_tokens,
+            num_wavelet_tokens=args.num_wavelet_tokens,
+            dropout=args.pt_dropout,
+        ),
+        backend=SSLAASIST(in_dim=1024),
+    )
+
+
+@register_model('wpt-mertaasist')
+def _build_wpt_mertaasist(args):
+    return SingleSSLModel(
+        frontend=WPT_MERT(
+            model_dir=args.mert,
+            prompt_dim=args.prompt_dim,
+            device=_dev(args),
+            num_prompt_tokens=args.num_prompt_tokens,
+            num_wavelet_tokens=args.num_wavelet_tokens,
+            dropout=args.pt_dropout,
+        ),
+        backend=SSLAASIST(in_dim=1024),
+    )

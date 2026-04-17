@@ -114,8 +114,8 @@ class atadd_dataset(Dataset):
         self.class_type = {
             "speech": 0,
             "sound": 1,
-            "music": 2,
-            "singing": 3
+            "singing": 2,
+            "music": 3,
         }
         self.rawboost = rawboost
         self.musanrir = musanrir

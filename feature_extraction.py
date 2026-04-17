@@ -424,10 +424,6 @@ from transformers import ClapModel, ClapProcessor
 import numpy as np
 
 class CLAP(nn.Module):
-    """
-    对齐XLSR接口的CLAP封装
-    输出格式与XLSR保持一致：[B, T, C]
-    """
     def __init__(self,
                  model_dir,
                  device='cuda',
@@ -509,5 +505,6 @@ class CLAP(nn.Module):
             return outputs.last_hidden_state, outputs.hidden_states
         else:
             return outputs.last_hidden_state
+
     def extract_features(self, audio_data):
         return self.forward(audio_data)

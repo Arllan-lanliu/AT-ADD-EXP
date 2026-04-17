@@ -3,3 +3,7 @@ ckpt_t2/
 model_comparison_dev.csv
 __pycache__/
 0_record.txt
+1_run.sh
+2_run.sh    
+3_run.sh
+4_run.sh
