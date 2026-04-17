@@ -1212,8 +1212,8 @@ def _build_ft_mertaasist(args):
     )
 
 
-@register_model('ft-beats_aasist')
-def _build_ft_beats_aasist(args):
+@register_model('ft-beatsaasist')
+def _build_ft_beatsaasist(args):
     # BEATs encoder stays frozen; only the AASIST head is fine-tuned
     return SingleSSLModel(
         frontend=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
@@ -1221,8 +1221,8 @@ def _build_ft_beats_aasist(args):
     )
 
 
-@register_model('ft-clap_aasist')
-def _build_ft_clap_aasist(args):
+@register_model('ft-clapaasist')
+def _build_ft_clapaasist(args):
     return SingleSSLModel(
         frontend=CLAP(model_dir=args.clap, device=_dev(args), freeze=False),
         backend=SSLAASIST(in_dim=1024),
@@ -1247,8 +1247,8 @@ def _build_ft_xlsrwavlmaasist(args):
     )
 
 
-@register_model('ft-xlsrbeats_aasist')
-def _build_ft_xlsrbeats_aasist(args):
+@register_model('ft-xlsrbeatsaasist')
+def _build_ft_xlsrbeatsaasist(args):
     # BEATs output is 768-d; CatLinear(1024+768→1024) is the only valid fusion here.
     # The --fusion argument is not applicable for this combination.
     return DualSSLModel(

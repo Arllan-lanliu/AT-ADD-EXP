@@ -20,14 +20,14 @@
 #     ft-w2v2aasist     XLS-R-300M  + AASIST
 #     ft-wavlmaasist    WavLM-Large + AASIST
 #     ft-mertaasist     MERT-330M   + AASIST
-#     ft-beats_aasist   BEATs (frozen) + AASIST
-#     ft-clap_aasist    CLAP (HTSAT)   + AASIST
+#     ft-beatsaasist    BEATs       + AASIST
+#     ft-clapaasist    CLAP        + AASIST
 #     ft-xlsr_sls       XLS-R + layer-weighted SLS head
 #
 #   Fine-tuned dual-SSL + AASIST (🔥🔥 two encoders):
 #     ft-xlsrwavlmaasist    XLS-R + WavLM   + fusion + AASIST
 #     ft-xlsrmertaasist     XLS-R + MERT    + fusion + AASIST
-#     ft-xlsrbeats_aasist   XLS-R + BEATs   + CatLinear + AASIST
+#     ft-xlsrbeatsaasist   XLS-R + BEATs   + fusion + AASIST
 #     ft-xlsrclapaasist     XLS-R + CLAP    + fusion + AASIST
 #
 #   Prompt-tuned SSL + AASIST (🎯 frozen backbone, learnable prompts):

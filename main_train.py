@@ -370,7 +370,7 @@ def train(args):
     monitor_loss = 'base_loss'
     multi_ssl_models = {
         'ft-xlsrwavlmaasist',
-        'ft-xlsrbeats_aasist',
+        'ft-xlsrbeatsaasist',
         'ft-xlsrmertaasist',
         'ft-xlsrclapaasist',
     }
