@@ -84,8 +84,8 @@ Modify the dataset paths in `config.py` or pass them via command-line arguments:
 ## 2. Environment Setup
 
 ```bash
-conda create -n atadd python=3.10.13
-conda activate atadd
+conda create -n atadd3.10 python=3.10.13
+conda activate atadd3.10
 pip install -r requirements.txt
 ```
 
@@ -104,8 +104,16 @@ Then update the path in `config.py`:
 
 ```
 --xlsr yourpath/huggingface/wav2vec2-xls-r-300m
-```
 
+```
+gpu=2
+model_name=ft-beats_aasist
+model_path=./ckpt_t2/baseline_ft-beats_aasist_epoch40
+
+PYTHONWARNINGS="ignore" python main_train.py --gpu ${gpu} --train_task atadd-track2 --model ft-beats_aasist \
+        --num_epochs 40 --num_workers 4 --batch_size 40 \
+         --interval 2 --seed 1234 --lr 0.000001 \
+        --out_fold ${model_path} --continue_training
 ---
 
 ## 4. Training

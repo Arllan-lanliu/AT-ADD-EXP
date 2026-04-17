@@ -31,6 +31,9 @@ def init():
     parser.add_argument("--eval_task", type=str, default=None,
                         choices=["atadd-track1", "atadd-track2"],
                         help="Evaluation task, if not set will use train_task from args.json")
+    
+    parser.add_argument("--threshold", type=float, default=0.5,
+                        help="Threshold for binary classification")
 
     temp_args, _ = parser.parse_known_args()
 
@@ -70,7 +73,8 @@ def init():
     if args.score_file is None:
         result_dir = os.path.join(args.model_path, 'result')
         os.makedirs(result_dir, exist_ok=True)
-        args.score_file = os.path.join(result_dir, f'{args.eval_task}_logits.csv')
+        args.score_file = os.path.join(result_dir, f'{args.eval_task}_logits_eval.csv')
+        args.binary_score_file = os.path.join(result_dir, f'{args.eval_task}_binary_eval.csv')
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     args.cuda = torch.cuda.is_available()
@@ -79,7 +83,9 @@ def init():
     print("Using GPU:", args.gpu)
     print("Eval task:", args.eval_task)
     print("Eval audio:", args.eval_audio)
+    print("Threshold:", args.threshold)
     print("Score file:", args.score_file)
+    print("Binary score file:", args.binary_score_file)
 
     return args
 
@@ -101,6 +107,26 @@ def build_model(args):
         feat_model = WAVLMAASIST(model_dir=args.wavlm, freeze=False).to(args.device)
     if args.model == 'ft-mertaasist':
         feat_model = MERTAASIST(model_dir=args.mert, freeze=False).to(args.device)
+    if args.model == 'ft-xlsrwavlmaasist':
+        feat_model = XLSRWAVLMAASIST(
+            xlsr_model_dir=args.xlsr,
+            wavlm_model_dir=args.wavlm,
+            freeze=False,
+            fusion=getattr(args, 'fusion', 'cat_linear'),
+        ).to(args.device)
+    if args.model == 'ft-xlsrbeats_aasist':
+        feat_model = XLSRBEATSAASIST(
+            xlsr_model_dir=args.xlsr,
+            beats_model_dir=args.beats,
+            freeze=False
+        ).to(args.device)
+    if args.model == 'ft-xlsrmertaasist':
+        feat_model = XLSRMERTAASIST(
+            xlsr_model_dir=args.xlsr,
+            mert_model_dir=args.mert,
+            freeze=False,
+            fusion=getattr(args, 'fusion', 'cat_linear'),
+        ).to(args.device)
     if args.model == 'pt-w2v2aasist':
         feat_model = PTW2V2AASIST(
             model_dir=args.xlsr,
@@ -116,9 +142,23 @@ def build_model(args):
             num_wavelet_tokens=args.num_wavelet_tokens,
             dropout=args.pt_dropout
         ).to(args.device)
+    
+    if args.model == 'ft-beats_aasist':
+        feat_model = BEATs_AASIST(model_dir=args.beats).to(args.device)
+    if args.model == 'ft-xlsr_sls':
+        feat_model = XLSR_SLS(model_dir=args.xlsr).to(args.device)
+    if args.model == 'ft-clap_aasist':
+        feat_model = CLAP_AASIST(model_dir=args.clap).to(args.device)
+    if args.model == 'ft-xlsrclapaasist':
+        feat_model = XLSRCLAPAASIST(
+            xlsr_model_dir=args.xlsr,
+            clap_model_dir=args.clap,
+            freeze=False,
+            fusion=getattr(args, 'fusion', 'cat_linear'),
+        ).to(args.device)
+
 
     return feat_model
-
 
 def gen_score(model, args):
     test_set = atadd_eval_dataset(
@@ -150,6 +190,21 @@ def gen_score(model, args):
                     audio_fn = fn.strip()
                     writer.writerow([audio_fn, float(score)])
 
+def gen_binary_score(score_file, binary_score_file, threshold=0.5):
+    with open(score_file, "r", encoding="utf-8-sig", newline="") as fin, \
+        open(binary_score_file, "w", encoding="utf-8", newline="") as fout:
+
+        reader = csv.DictReader(fin)
+        writer = csv.writer(fout)
+
+        writer.writerow(["name", "predict"])
+
+        for row in reader:
+            name = row["name"].strip()
+            score = float(row["score"])
+            predict = "real" if score >= threshold else "fake"
+            writer.writerow([name, predict])
+
 
 if __name__ == "__main__":
     args = init()
@@ -164,3 +219,6 @@ if __name__ == "__main__":
 
     gen_score(feat_model, args)
     print(f"Done. Score file saved to: {args.score_file}")
+
+    gen_binary_score(args.score_file, args.binary_score_file, args.threshold)
+    print(f"Done. Binary score file saved to: {args.binary_score_file}")

@@ -33,12 +33,13 @@ class rolloff(torch_nn.Module):
 
 
 class XLSR(torch.nn.Module):
-    def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True, visual=False):
+    def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True, visual=False, return_hidden_states=False):
         super(XLSR, self).__init__()
 
         # Set device (GPU or CPU)
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.sampling_rate = sampling_rate
+        self.return_hidden_states = return_hidden_states
 
         # Load the pre-trained model configuration and weights
         self.config = Wav2Vec2Config.from_json_file(f"{model_dir}/config.json")
@@ -63,15 +64,23 @@ class XLSR(torch.nn.Module):
             outputs = self.model(feat, output_attentions=self.visual)
             last_hidden_state = outputs.last_hidden_state
             attentions = outputs.attentions
+            hidden_states = outputs.hidden_states
+            if self.return_hidden_states:
+                return last_hidden_state, attentions, hidden_states
             return last_hidden_state, attentions
         if self.freeze:
             with torch.no_grad():
-                output = self.model(feat).last_hidden_state
-                
+                outputs = self.model(feat)
+                last_hidden_state = outputs.last_hidden_state
+                hidden_states = outputs.hidden_states
         else:
-            output = self.model(feat).last_hidden_state
+            outputs = self.model(feat)
+            last_hidden_state = outputs.last_hidden_state
+            hidden_states = outputs.hidden_states # 25, (B, T, C)
 
-        return output
+        if self.return_hidden_states:
+            return last_hidden_state, hidden_states
+        return last_hidden_state
     
     def extract_features(self, audio_data):
         # Process the input audio and extract the features using the forward pass
@@ -80,6 +89,7 @@ class XLSR(torch.nn.Module):
 
 
 class WAVLM(torch.nn.Module):
+    # WAVLM-Large 输出特征维度是1024
     def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True):
         super(WAVLM, self).__init__()
         # Set device (GPU or CPU)
@@ -118,6 +128,7 @@ class WAVLM(torch.nn.Module):
 
 class MERT(torch.nn.Module):
     def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True):
+        # MERT-v1-330M 输出特征维度是1024
         super(MERT, self).__init__()
 
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
@@ -371,3 +382,132 @@ class PT_MERT(torch.nn.Module):
         # Process the input audio and extract the features using the forward pass
         return self.forward(audio_data)  # Return the final layer's output
 
+#--------------------------
+from beats.BEATs import BEATsModel
+############################
+## FOR fine-tuned SSL MODEL
+############################
+
+
+class BEATs(nn.Module):
+    def __init__(self,model_dir, device='cuda', sampling_rate=16000, freeze=True):
+        super(BEATs, self).__init__()
+    
+        self.model = BEATsModel(cfg_path=f"{model_dir}/BEATs_iter3_plus_AS2M.pt")
+        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        self.sampling_rate = sampling_rate
+        self.freeze = freeze
+        if freeze:
+            self.model.eval()
+            for param in self.model.parameters():
+                param.requires_grad = False
+        else:
+            self.model.train()
+
+    def extract_features(self, input_data):
+        # input should be in shape (batch, length)
+        if input_data.ndim == 3:
+            input_tmp = input_data[:, :, 0]
+        else:
+            input_tmp = input_data
+            
+        # [batch, length, dim]
+        emb = self.model(input_tmp)
+        # print(emb.shape)
+        return emb
+
+
+import torch
+import torch.nn as nn
+import torchaudio
+from transformers import ClapModel, ClapProcessor
+import numpy as np
+
+class CLAP(nn.Module):
+    """
+    对齐XLSR接口的CLAP封装
+    输出格式与XLSR保持一致：[B, T, C]
+    """
+    def __init__(self,
+                 model_dir,
+                 device='cuda',
+                 freeze=True,
+                 sampling_rate=16000,
+                 return_hidden_states=False):
+        """
+        Args:
+            model_dir: 预训练模型路径
+            freeze: 是否冻结参数
+            sampling_rate: 采样率
+        """
+        super(CLAP, self).__init__()
+        
+        self.device = torch.device(
+            device if torch.cuda.is_available() else 'cpu'
+        )
+        self.sampling_rate = sampling_rate
+        self.return_hidden_states = return_hidden_states
+        
+        # 加载模型
+        print(f"Loading CLAP from {model_dir}...")
+        self.resampler = torchaudio.transforms.Resample(
+            orig_freq=sampling_rate,
+            new_freq=48000
+        ).to(self.device)
+        self.processor = ClapProcessor.from_pretrained(model_dir)
+        self.model = ClapModel.from_pretrained(model_dir).to(self.device)
+        
+        # 只使用音频编码器部分
+        self.audio_encoder = self.model.audio_model# HTSAT
+        
+        if freeze:
+            self.model.eval()
+            for param in self.model.parameters():
+                param.requires_grad = False
+        
+        self.freeze = freeze
+    
+    def forward(self, audio_data):
+        """
+        Args:
+            audio_data: [B, T]
+        Returns:[40, 1024, 2, 32]
+        """
+        if isinstance(audio_data, np.ndarray):
+            audio_data = torch.tensor(audio_data, dtype=torch.float32)
+        
+        if audio_data.dim() == 1:
+            audio_data = audio_data.unsqueeze(0)# [1, T]
+        
+        audio_data = audio_data.to(self.device)
+        if audio_data.shape[1] != 48000:
+            audio_data = self.resampler(audio_data)
+            
+        # CLAP的processor需要numpy输入
+        audio_np = audio_data.cpu().numpy()
+        
+        inputs = self.processor(
+            audios=audio_np,
+            sampling_rate=48000,
+            return_tensors="pt",
+            padding=True
+        )
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        
+        if self.freeze:
+            with torch.no_grad():
+                outputs = self.audio_encoder(**inputs,
+                output_hidden_states=self.return_hidden_states
+                )
+        else:
+            outputs = self.audio_encoder(
+                **inputs,
+                output_hidden_states=self.return_hidden_states
+            )
+        
+        if self.return_hidden_states:
+            return outputs.last_hidden_state, outputs.hidden_states
+        else:
+            return outputs.last_hidden_state
+    def extract_features(self, audio_data):
+        return self.forward(audio_data)

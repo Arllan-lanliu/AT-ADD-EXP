@@ -380,7 +380,7 @@ class Residual_block(nn.Module):
 
 
 class SSLAASIST(nn.Module):
-    def __init__(self):
+    def __init__(self, in_dim=1024):
         super().__init__()
 
         # AASIST parameters
@@ -407,7 +407,7 @@ class SSLAASIST(nn.Module):
             nn.Sequential(Residual_block(nb_filts=filts[4])),
             nn.Sequential(Residual_block(nb_filts=filts[4])),
             nn.Sequential(Residual_block(nb_filts=filts[4])))
-        self.LL = nn.Linear(1024, 128)
+        self.LL = nn.Linear(in_dim, 128)
         
         self.attention = nn.Sequential(
             nn.Conv2d(64, 128, kernel_size=(1, 1)),
@@ -618,6 +618,543 @@ class WAVLMAASIST(nn.Module):
         self.wavlm.eval()   # important       
 
 
+# ---------------------------------------------------------------------------
+# Feature-fusion modules for dual-SSL models
+# ---------------------------------------------------------------------------
+
+class CatLinearFusion(nn.Module):
+    """Concatenate both feature streams then project: [x ; y] -> Linear(out_dim)."""
+
+    def __init__(self, dim_x: int, dim_y: int, out_dim: int):
+        super().__init__()
+        self.proj = nn.Linear(dim_x + dim_y, out_dim)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return self.proj(torch.cat([x, y], dim=-1))
+
+
+class GatedFusion(nn.Module):
+    """
+    Soft-gating fusion.
+
+    A gate vector g ∈ (0,1)^out_dim is derived from the concatenation of both
+    streams and used to interpolate their individual projections:
+        g      = σ( W_gate · [x ; y] )
+        output = g ⊙ proj_x(x)  +  (1−g) ⊙ proj_y(y)
+    """
+
+    def __init__(self, dim_x: int, dim_y: int, out_dim: int):
+        super().__init__()
+        self.proj_x = nn.Linear(dim_x, out_dim)
+        self.proj_y = nn.Linear(dim_y, out_dim)
+        self.gate   = nn.Linear(dim_x + dim_y, out_dim)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        g = torch.sigmoid(self.gate(torch.cat([x, y], dim=-1)))
+        return g * self.proj_x(x) + (1.0 - g) * self.proj_y(y)
+
+
+class CrossAttentionFusion(nn.Module):
+    """
+    Bidirectional cross-attention fusion.
+
+    Each stream attends to the other via a separate MultiheadAttention layer,
+    the attended representations are combined with a residual connection, and
+    the two normalised streams are concatenated then projected:
+        x' = LayerNorm( x_proj  +  MHA(Q=x_proj,  K=y_proj,  V=y_proj) )
+        y' = LayerNorm( y_proj  +  MHA(Q=y_proj,  K=x_proj,  V=x_proj) )
+        output = Linear( [x' ; y'] )
+    """
+
+    def __init__(self, dim_x: int, dim_y: int, out_dim: int,
+                 num_heads: int = 8, dropout: float = 0.1):
+        super().__init__()
+        self.proj_x    = nn.Linear(dim_x, out_dim) if dim_x != out_dim else nn.Identity()
+        self.proj_y    = nn.Linear(dim_y, out_dim) if dim_y != out_dim else nn.Identity()
+        self.cross_x2y = nn.MultiheadAttention(out_dim, num_heads, dropout=dropout, batch_first=True)
+        self.cross_y2x = nn.MultiheadAttention(out_dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm_x    = nn.LayerNorm(out_dim)
+        self.norm_y    = nn.LayerNorm(out_dim)
+        self.proj_out  = nn.Linear(out_dim * 2, out_dim)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        x = self.proj_x(x)
+        y = self.proj_y(y)
+        attended_x, _ = self.cross_x2y(query=x, key=y, value=y)
+        attended_y, _ = self.cross_y2x(query=y, key=x, value=x)
+        x = self.norm_x(x + attended_x)
+        y = self.norm_y(y + attended_y)
+        return self.proj_out(torch.cat([x, y], dim=-1))
+
+
+class FiLMFusion(nn.Module):
+    """
+    Feature-wise Linear Modulation (FiLM) fusion.
+
+    Stream y acts as the conditioning signal that generates per-channel scale
+    (γ) and shift (β) parameters to modulate stream x:
+        px          = proj_x(x)
+        γ, β        = chunk( W_film · y )
+        modulated   = sigmoid(γ) ⊙ px  +  β
+        output      = LayerNorm( modulated + proj_y(y) )
+    """
+
+    def __init__(self, dim_x: int, dim_y: int, out_dim: int):
+        super().__init__()
+        self.proj_x   = nn.Linear(dim_x, out_dim)
+        self.film_gen = nn.Linear(dim_y, out_dim * 2)
+        self.proj_y   = nn.Linear(dim_y, out_dim)
+        self.norm     = nn.LayerNorm(out_dim)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        px = self.proj_x(x)
+        gamma, beta = self.film_gen(y).chunk(2, dim=-1)
+        modulated = torch.sigmoid(gamma) * px + beta
+        return self.norm(modulated + self.proj_y(y))
+
+
+class TypeAwareFusion(nn.Module):
+    """
+    Type-aware dynamic fusion with auxiliary classification loss.
+
+    An utterance-level type classifier predicts the audio category
+    (speech / sound / music / singing) from global-pooled features of both
+    streams.  Per-type learnable weights then produce a soft convex
+    combination of the two individually projected streams:
+
+        xlsr_g, wavlm_g  = mean-pool over T
+        type_logits       = MLP( [xlsr_g ; wavlm_g] )      (B, num_types)
+        type_probs         = softmax(type_logits)            (B, num_types)
+        weights            = type_probs @ softmax(W_type)    (B, 2)
+        fused              = w0·proj_x(x)  +  w1·proj_y(y)  (B, T, out_dim)
+
+    Returns ``(fused, type_logits)`` so the caller can compute an auxiliary
+    cross-entropy loss on the type prediction side-task.
+
+    Type index mapping (must match dataset.py):
+        0 = speech,  1 = sound,  2 = music,  3 = singing
+    """
+
+    NUM_TYPES = 4
+
+    def __init__(self, dim_x: int, dim_y: int, out_dim: int):
+        super().__init__()
+        self.proj_x = nn.Linear(dim_x, out_dim)
+        self.proj_y = nn.Linear(dim_y, out_dim)
+
+        self.type_classifier = nn.Sequential(
+            nn.Linear(dim_x + dim_y, 256),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(256, self.NUM_TYPES),
+        )
+
+        # Per-type raw fusion logits (before softmax): shape (num_types, 2).
+        # Initialised to zero so both streams are weighted equally at the start.
+        self.type_fusion_weights = nn.Parameter(torch.zeros(self.NUM_TYPES, 2))
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor):
+        # Utterance-level summary for type prediction.
+        xlsr_g  = x.mean(dim=1)   # (B, dim_x)
+        wavlm_g = y.mean(dim=1)   # (B, dim_y)
+
+        type_logits = self.type_classifier(
+            torch.cat([xlsr_g, wavlm_g], dim=-1)
+        )  # (B, num_types)
+        type_probs = F.softmax(type_logits, dim=-1)  # (B, num_types)
+
+        # Blend weights per sample via soft type assignment.
+        # (B, num_types) @ (num_types, 2) -> (B, 2),  rows sum to 1.
+        weights = torch.matmul(
+            type_probs,
+            F.softmax(self.type_fusion_weights, dim=-1),
+        )  # (B, 2)
+
+        w_x = weights[:, 0].unsqueeze(1).unsqueeze(2)  # (B, 1, 1)
+        w_y = weights[:, 1].unsqueeze(1).unsqueeze(2)  # (B, 1, 1)
+
+        fused = w_x * self.proj_x(x) + w_y * self.proj_y(y)  # (B, T, out_dim)
+        return fused, type_logits
+
+
+class ProjCatFusion(nn.Module):
+    """
+    Project-then-concatenate fusion (ablation baseline).
+
+    Each stream is projected to out_dim//2 independently, then the two
+    half-dim representations are concatenated to recover out_dim:
+        output = [ Linear(dim_x, out_dim//2)(x) ; Linear(dim_y, out_dim//2)(y) ]
+
+    Unlike CatLinearFusion there is NO joint linear after the concat, so the
+    two encoder spaces are kept strictly separated up to the AASIST head.
+    """
+
+    def __init__(self, dim_x: int, dim_y: int, out_dim: int):
+        super().__init__()
+        assert out_dim % 2 == 0, "out_dim must be even for ProjCatFusion"
+        half = out_dim // 2
+        self.proj_x = nn.Linear(dim_x, half)
+        self.proj_y = nn.Linear(dim_y, half)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return torch.cat([self.proj_x(x), self.proj_y(y)], dim=-1)
+
+
+class AddFusion(nn.Module):
+    """
+    Element-wise addition fusion (ablation baseline).
+
+    Both streams are summed directly without any learned projection:
+        output = x + y
+
+    Zero additional parameters; requires dim_x == dim_y == out_dim.
+    """
+
+    def __init__(self, dim_x: int, dim_y: int, out_dim: int):
+        super().__init__()
+        assert dim_x == dim_y == out_dim, (
+            f"AddFusion requires dim_x == dim_y == out_dim, "
+            f"got {dim_x}, {dim_y}, {out_dim}"
+        )
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return x + y
+
+
+_FUSION_CLASSES = {
+    "cat_linear":  CatLinearFusion,
+    "gated":       GatedFusion,
+    "cross_attn":  CrossAttentionFusion,
+    "film":        FiLMFusion,
+    "type_aware":  TypeAwareFusion,
+    "proj512_cat": ProjCatFusion,
+    "add":         AddFusion,
+}
+
+
+def build_fusion_module(name: str, dim_x: int, dim_y: int, out_dim: int) -> nn.Module:
+    if name not in _FUSION_CLASSES:
+        raise ValueError(
+            f"Unknown fusion method '{name}'. "
+            f"Choose from: {list(_FUSION_CLASSES.keys())}"
+        )
+    return _FUSION_CLASSES[name](dim_x, dim_y, out_dim)
+
+
+# ---------------------------------------------------------------------------
+
+class XLSRWAVLMAASIST(nn.Module):
+    """
+    Dual-SSL fusion:
+    audio -> XLSR + WavLM -> fuse features -> AASIST classifier
+
+    Supported fusion methods (--fusion):
+      cat_linear  : concatenate then Linear projection (default)
+      gated       : soft gate interpolation between the two projections
+      cross_attn  : bidirectional cross-attention with residual + LayerNorm
+      film        : Feature-wise Linear Modulation (WavLM modulates XLSR)
+      type_aware  : dynamic per-type weights with auxiliary type-classification
+                    loss (access side-channel via model._last_type_logits)
+    """
+    def __init__(self, xlsr_model_dir, wavlm_model_dir, device='cuda',
+                 freeze=True, visual=False, fusion='cat_linear'):
+        super(XLSRWAVLMAASIST, self).__init__()
+
+        self.xlsr = XLSR(
+            model_dir=xlsr_model_dir,
+            device=device,
+            freeze=freeze,
+            visual=visual,
+        )
+        self.wavlm = WAVLM(
+            model_dir=wavlm_model_dir,
+            device=device,
+            freeze=freeze,
+        )
+        # XLSR-300M and WavLM-Large are both 1024-d; fuse to 1024 for SSLAASIST.
+        self.fusion_module = build_fusion_module(fusion, 1024, 1024, 1024)
+        self.w2vaasist = SSLAASIST(in_dim=1024)
+        self.visual = visual
+        # Side-channel: set by _fuse_features when fusion == 'type_aware'.
+        self._last_type_logits = None
+
+    def _fuse_features(self, xlsr_feat, wavlm_feat):
+        # Be robust to small sequence-length mismatches.
+        t = min(xlsr_feat.size(1), wavlm_feat.size(1))
+        xlsr_feat  = xlsr_feat[:, :t, :]
+        wavlm_feat = wavlm_feat[:, :t, :]
+        result = self.fusion_module(xlsr_feat, wavlm_feat)
+        if isinstance(result, tuple):
+            fused, self._last_type_logits = result
+        else:
+            fused = result
+            self._last_type_logits = None
+        return fused  # (B, T, 1024)
+
+    def forward(self, audio_data):
+        if self.visual:
+            xlsr_feat, attention_weights = self.xlsr.extract_features(audio_data)
+        else:
+            xlsr_feat = self.xlsr.extract_features(audio_data)
+
+        wavlm_feat = self.wavlm.extract_features(audio_data)
+        fused_feat = self._fuse_features(xlsr_feat, wavlm_feat)
+        last_hidden, output = self.w2vaasist(fused_feat)
+
+        if self.visual:
+            return last_hidden, output, attention_weights
+        return last_hidden, output
+
+    def train(self, mode=True):
+        if mode:
+            self.w2vaasist.train(mode)
+        else:
+            self.w2vaasist.eval()
+
+    def eval(self):
+        self.w2vaasist.eval()
+        self.xlsr.eval()
+        self.wavlm.eval()
+
+
+class XLSRBEATSAASIST(nn.Module):
+    """
+    Dual-encoder fusion:
+    audio -> XLSR + BEATs -> concat features -> linear fusion -> AASIST classifier
+    (BEATs last hidden is 768-d, same as standalone BEATs_AASIST.)
+    """
+    def __init__(self, xlsr_model_dir, beats_model_dir, device='cuda', freeze=True, visual=False):
+        super(XLSRBEATSAASIST, self).__init__()
+
+        self.xlsr = XLSR(
+            model_dir=xlsr_model_dir,
+            device=device,
+            freeze=freeze,
+            visual=visual,
+        )
+        self.beats = BEATs(
+            model_dir=beats_model_dir,
+            device=device,
+            freeze=freeze,
+        )
+        # 1024 (XLSR) + 768 (BEATs) -> 1024 for SSLAASIST
+        self.fuse_proj = nn.Linear(1024 + 768, 1024)
+        self.w2vaasist = SSLAASIST(in_dim=1024)
+        self.visual = visual
+
+    def _fuse_features(self, xlsr_feat, beats_feat):
+        t = min(xlsr_feat.size(1), beats_feat.size(1))
+        if xlsr_feat.size(1) != t:
+            xlsr_feat = xlsr_feat[:, :t, :]
+        if beats_feat.size(1) != t:
+            beats_feat = beats_feat[:, :t, :]
+        fused = torch.cat([xlsr_feat, beats_feat], dim=-1)
+        fused = self.fuse_proj(fused)
+        return fused
+
+    def forward(self, audio_data):
+        if self.visual:
+            xlsr_feat, attention_weights = self.xlsr.extract_features(audio_data)
+        else:
+            xlsr_feat = self.xlsr.extract_features(audio_data)
+
+        beats_feat = self.beats.extract_features(audio_data)
+        fused_feat = self._fuse_features(xlsr_feat, beats_feat)
+        last_hidden, output = self.w2vaasist(fused_feat)
+
+        if self.visual:
+            return last_hidden, output, attention_weights
+        return last_hidden, output
+
+    def train(self, mode=True):
+        super().train(mode)
+        if mode:
+            if self.xlsr.freeze:
+                self.xlsr.eval()
+            if self.beats.freeze:
+                self.beats.eval()
+        return self
+
+    def eval(self):
+        return super().eval()
+
+
+class XLSRMERTAASIST(nn.Module):
+    """
+    Dual-SSL fusion:
+    audio -> XLSR + MERT -> fuse features -> AASIST classifier
+    (XLSR-300M and MERT-v1-330M are both 1024-d frame features.)
+
+    Supported fusion methods (--fusion):
+      cat_linear  : concatenate then Linear projection (default)
+      gated       : soft gate interpolation between the two projections
+      cross_attn  : bidirectional cross-attention with residual + LayerNorm
+      film        : Feature-wise Linear Modulation (MERT modulates XLSR)
+      type_aware  : dynamic per-type weights with auxiliary type-classification
+                    loss (access side-channel via model._last_type_logits)
+    """
+    def __init__(self, xlsr_model_dir, mert_model_dir, device='cuda',
+                 freeze=True, visual=False, fusion='cat_linear'):
+        super(XLSRMERTAASIST, self).__init__()
+
+        self.xlsr = XLSR(
+            model_dir=xlsr_model_dir,
+            device=device,
+            freeze=freeze,
+            visual=visual,
+        )
+        self.mert = MERT(
+            model_dir=mert_model_dir,
+            device=device,
+            freeze=freeze,
+        )
+        # XLSR-300M and MERT-v1-330M are both 1024-d; fuse to 1024 for SSLAASIST.
+        self.fusion_module = build_fusion_module(fusion, 1024, 1024, 1024)
+        self.w2vaasist = SSLAASIST(in_dim=1024)
+        self.visual = visual
+        # Side-channel: set by _fuse_features when fusion == 'type_aware'.
+        self._last_type_logits = None
+
+    def _fuse_features(self, xlsr_feat, mert_feat):
+        # Be robust to small sequence-length mismatches.
+        t = min(xlsr_feat.size(1), mert_feat.size(1))
+        xlsr_feat = xlsr_feat[:, :t, :]
+        mert_feat = mert_feat[:, :t, :]
+        result = self.fusion_module(xlsr_feat, mert_feat)
+        if isinstance(result, tuple):
+            fused, self._last_type_logits = result
+        else:
+            fused = result
+            self._last_type_logits = None
+        return fused  # (B, T, 1024)
+
+    def forward(self, audio_data):
+        if self.visual:
+            xlsr_feat, attention_weights = self.xlsr.extract_features(audio_data)
+        else:
+            xlsr_feat = self.xlsr.extract_features(audio_data)
+
+        mert_feat = self.mert.extract_features(audio_data)
+        fused_feat = self._fuse_features(xlsr_feat, mert_feat)
+        last_hidden, output = self.w2vaasist(fused_feat)
+
+        if self.visual:
+            return last_hidden, output, attention_weights
+        return last_hidden, output
+
+    def train(self, mode=True):
+        super().train(mode)
+        if mode:
+            if self.xlsr.freeze:
+                self.xlsr.eval()
+            if self.mert.freeze:
+                self.mert.eval()
+        return self
+
+    def eval(self):
+        return super().eval()
+
+
+class XLSRCLAPAASIST(nn.Module):
+    """
+    Dual-SSL fusion: XLSR-300M + CLAP (HTSAT) → AASIST classifier
+
+    CLAP's HTSAT audio encoder outputs spatial feature maps [B, 1024, 2, 32].
+    They are frequency-averaged and then temporally interpolated to match
+    XLSR's frame-level sequence length before the two streams are fused.
+
+    Both encoders output 1024-d features, so all fusion strategies that work
+    for XLSR+MERT apply here as well (default: cat_linear).
+
+    Supported fusion methods (--fusion):
+      cat_linear  : concatenate then Linear projection (default)
+      gated       : soft gate interpolation
+      cross_attn  : bidirectional cross-attention with residual + LayerNorm
+      film        : Feature-wise Linear Modulation (CLAP modulates XLSR)
+      type_aware  : dynamic per-type weights with auxiliary type-clf loss
+      proj512_cat : project each stream to 512 then concatenate → 1024
+      add         : element-wise addition (requires dim_x == dim_y == out_dim)
+    """
+    def __init__(self, xlsr_model_dir, clap_model_dir, device='cuda',
+                 freeze=True, visual=False, fusion='cat_linear'):
+        super().__init__()
+
+        self.xlsr = XLSR(
+            model_dir=xlsr_model_dir,
+            device=device,
+            freeze=freeze,
+            visual=visual,
+        )
+        self.clap = CLAP(
+            model_dir=clap_model_dir,
+            device=device,
+            freeze=freeze,
+        )
+        # XLSR-300M → 1024-d;  CLAP/HTSAT → 1024-d after freq pooling
+        self.fusion_module = build_fusion_module(fusion, 1024, 1024, 1024)
+        self.w2vaasist = SSLAASIST(in_dim=1024)
+        self.visual = visual
+        # Side-channel for TypeAwareFusion auxiliary loss
+        self._last_type_logits = None
+
+    @staticmethod
+    def _process_clap(raw):
+        """Convert raw CLAP output [B, 1024, F, T_clap] → [B, T_clap, 1024]."""
+        x = raw.mean(dim=2)       # [B, 1024, T_clap]  (avg over freq)
+        return x.permute(0, 2, 1) # [B, T_clap, 1024]
+
+    def _fuse_features(self, xlsr_feat, clap_feat):
+        """
+        xlsr_feat : [B, T_xlsr, 1024]
+        clap_feat : [B, T_clap, 1024]  (T_clap ≈ 32, T_xlsr ≈ 300+)
+
+        CLAP is interpolated along the time axis to match XLSR's length.
+        """
+        T = xlsr_feat.size(1)
+        # linear interpolation: [B, 1024, T_clap] → [B, 1024, T] → [B, T, 1024]
+        clap_interp = F.interpolate(
+            clap_feat.permute(0, 2, 1),
+            size=T,
+            mode='linear',
+            align_corners=False,
+        ).permute(0, 2, 1)
+
+        result = self.fusion_module(xlsr_feat, clap_interp)
+        if isinstance(result, tuple):
+            fused, self._last_type_logits = result
+        else:
+            fused = result
+            self._last_type_logits = None
+        return fused  # [B, T, 1024]
+
+    def forward(self, audio_data):
+        if self.visual:
+            xlsr_feat, attention_weights = self.xlsr.extract_features(audio_data)
+        else:
+            xlsr_feat = self.xlsr.extract_features(audio_data)
+
+        clap_raw  = self.clap.extract_features(audio_data)   # [B, 1024, 2, 32]
+        clap_feat = self._process_clap(clap_raw)              # [B, 32, 1024]
+        fused_feat = self._fuse_features(xlsr_feat, clap_feat)
+
+        last_hidden, output = self.w2vaasist(fused_feat)
+        if self.visual:
+            return last_hidden, output, attention_weights
+        return last_hidden, output
+
+    def train(self, mode=True):
+        super().train(mode)
+        if mode:
+            if self.xlsr.freeze:
+                self.xlsr.eval()
+            if self.clap.freeze:
+                self.clap.eval()
+        return self
+
+    def eval(self):
+        return super().eval()
+
+
 class MERTAASIST(nn.Module):
     def __init__(self, model_dir, device='cuda',freeze = True):
         super(MERTAASIST, self).__init__()
@@ -651,7 +1188,7 @@ class MERTAASIST(nn.Module):
         # Set eval status for both components
         self.w2vaasist.eval()
         self.MERT.eval()
-
+ 
         
 class ResNet18ForAudio(nn.Module):
     def __init__(self, enc_dim=256, nclasses=2):
@@ -867,10 +1404,6 @@ class PTMERTAASIST(nn.Module):
         self.w2vaasist.eval()
         self.wav2vec2_with_prompt.eval()
 
-
-            
-        
-
 class WPTW2V2AASIST(nn.Module):
     def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=5, num_wavelet_tokens=6, dropout=0.1, visual=False):
         super(WPTW2V2AASIST, self).__init__()
@@ -917,7 +1450,6 @@ class WPTW2V2AASIST(nn.Module):
         # Set eval status for both components
         self.w2vaasist.eval()
         self.wav2vec2_with_prompt.eval()
-
 
 class WPTWAVLMAASIST(nn.Module):
     def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=5, num_wavelet_tokens=6, dropout=0.1, visual=False):
@@ -966,7 +1498,6 @@ class WPTWAVLMAASIST(nn.Module):
         self.w2vaasist.eval()
         self.wav2vec2_with_prompt.eval()
 
-
 class WPTMERTAASIST(nn.Module):
     def __init__(self, model_dir, prompt_dim=1024, device='cuda', sampling_rate=16000, num_prompt_tokens=5, num_wavelet_tokens=6, dropout=0.1, visual=False):
         super(WPTMERTAASIST, self).__init__()
@@ -1014,8 +1545,186 @@ class WPTMERTAASIST(nn.Module):
         self.w2vaasist.eval()
         self.wav2vec2_with_prompt.eval()
 
+#------------------------------------------------------------------------------------------
 
+
+class SLS(nn.Module):
+    def __init__(self, device):
+        super().__init__()
+        self.device = device
+        self.first_bn = nn.BatchNorm2d(num_features=1)
+        self.selu = nn.SELU(inplace=True)
+        self.fc0 = nn.Linear(1024, 1)
+        self.sig = nn.Sigmoid()
+        self.fc1 = nn.Linear(22847, 1024)
+        self.fc3 = nn.Linear(1024,2)
+        self.logsoftmax = nn.LogSoftmax(dim=1)
+
+    def getAttenF(self, layerResult): # layerresult = [24] (B, Frame, Dim)
+        poollayerResult = []
+        fullf = []
+        for layer in layerResult:
+            # layery = layer[0].transpose(0, 1).transpose(1, 2)
+            layery = layer.transpose(1, 2) # (B, Frame, Dim) -> (B, Dim, Frame)
+            layery = F.adaptive_avg_pool1d(layery, 1) # 作用在最后一个维度,1表示最后一个维度的输出size, (b, Dim, 1)
+            layery = layery.transpose(1, 2) 
+            poollayerResult.append(layery)
+
+            # x = layer[0].transpose(0, 1)
+            x = layer # (B, Frame, Dim)
+            x = x.view(x.size(0), -1,x.size(1), x.size(2))
+            fullf.append(x)
+
+        layery = torch.cat(poollayerResult, dim=1)
+        fullfeature = torch.cat(fullf, dim=1)
+        return layery, fullfeature
+
+    def forward(self, layerResult): #layerresult = [25] (B, Frame, Dim)
+        layerResult = layerResult[1:] #第一层是embedding_output
+        y0, fullfeature = self.getAttenF(layerResult)
+        y0 = self.fc0(y0)
+        y0 = self.sig(y0)
+        y0 = y0.view(y0.shape[0], y0.shape[1], y0.shape[2], -1)
+        fullfeature = fullfeature * y0
+        fullfeature = torch.sum(fullfeature, 1)
+        fullfeature = fullfeature.unsqueeze(dim=1)
+        x = self.first_bn(fullfeature)
+        x = self.selu(x)
+        x = F.max_pool2d(x, (3, 3))
+        x = torch.flatten(x, 1)
+        x = self.fc1(x)
+        x = self.selu(x)
+        x = self.fc3(x)
+        x = self.selu(x)
+        output = self.logsoftmax(x)
+
+        return x, output
+
+class XLSR_SLS(nn.Module):
+    def __init__(self, model_dir, device='cuda', freeze=True, visual=False):
+        super(XLSR_SLS, self).__init__()
+        self.wav2vec2 = XLSR(
+            model_dir=model_dir,
+            device=device,
+            freeze=freeze,
+            visual=visual,
+            return_hidden_states=True
+        )
+
+        self.sls = SLS(device=device)
+        self.visual = visual
+    def forward(self, audio_data):
+        if self.visual:
+            features, attention_weights, hidden_states = self.wav2vec2.extract_features(audio_data)
+            last_hidden, output  = self.sls(hidden_states)
+            return last_hidden, output, attention_weights
         
+        features, hidden_states = self.wav2vec2.extract_features(audio_data)
+        # hidden_states [25] (B, Frame, Dim)
+        last_hidden, output = self.sls(hidden_states)
+        return last_hidden, output
+
+    def train(self, mode=True):
+        # Set train status for both components
+        if mode:
+            self.sls.train(mode)
+        else:
+            self.sls.eval()
+
+    def eval(self):
+        # Set eval status for both components
+        self.sls.eval()
+        self.wav2vec2.eval()   # important
+
+#---------------------------------------------------------------------------
+class BEATs_AASIST(nn.Module):
+    def __init__(self, model_dir, device='cuda', freeze = True):
+        super(BEATs_AASIST, self).__init__()
+
+        # Initialize XLSRWithPrompt (features extractor)
+        self.beats = BEATs(
+            model_dir=model_dir,
+            device=device,
+            freeze=freeze
+        )
+
+        # Initialize AASIST (main model)
+        self.w2vaasist = SSLAASIST(in_dim=768)
+
+    def forward(self, audio_data):
+        # Extract features using XLSRWithPrompt
+        features = self.beats.extract_features(audio_data)
+
+        # Pass the features through BEATs_AASIST
+        last_hidden, output = self.w2vaasist(features)
+        return last_hidden, output
+
+    def train(self, mode=True):
+        # Set train status for both components
+        if mode:
+            self.w2vaasist.train(mode)
+        else:
+            self.w2vaasist.eval()
+
+    def eval(self):
+        # Set eval status for both components
+        self.w2vaasist.eval()
+        self.beats.eval()   # important
+
+#---------------------------------------------------------------------------
+class CLAP_AASIST(nn.Module):
+    def __init__(self, model_dir, device='cuda', freeze=True):
+        super(CLAP_AASIST, self).__init__()
+
+        # Initialize CLAP (features extractor)
+        self.clap_output_dim = 1024 
+        self.clap = CLAP(
+            model_dir=model_dir,
+            device=device,
+            freeze=freeze
+        )
+
+        # Initialize AASIST (main model)
+        self.w2vaasist = SSLAASIST(in_dim=self.clap_output_dim)
+
+    def forward(self, audio_data):
+        features = self.clap.extract_features(audio_data)
+        # features [B, 1024, 2, 32]
+        # ├── 40   = Batch size
+        # ├── 1024 =特征通道数（最后一个Stage的维度）
+        # ├── 2    = 频率维度（Mel频率bins经过4次下采样后）
+        # └── 32   = 时间维度（时间帧经过4次下采样后）
+        B, C, F, T = features.shape
+
+        # 方法1 只保留时间维度（对齐XLSR语义），对频率维度做平均池化，只保留时间维度
+        # [B, C, F, T] → [B, C, T] → [B, T, C]
+        features = features.mean(dim=2)       # [B, C, T]  [40, 1024, 32]
+        features = features.permute(0, 2, 1)  # [B, T, C]  [40, 32, 1024]
+
+        # 方法2 Reshape转换, 未尝试
+        # [B, C, F, T] → [B, C, F*T] → [B, F*T, C]
+        # features = features.flatten(2)# [B, C, F*T]  [40, 1024, 64]
+        # features = features.permute(0, 2, 1) # [B, T', C]
+
+        last_hidden, output = self.w2vaasist(features)
+        return last_hidden, output
+
+    def train(self, mode=True):
+        # Set train status for both components
+        if mode:
+            self.w2vaasist.train(mode)
+        else:
+            self.w2vaasist.eval()
+
+    def eval(self):
+        # Set eval status for both components
+        self.clap.eval()
+        self.w2vaasist.eval()
+
+#---------------------------------------------------------------------------
+
+
+#---------------------------------------------------------------------------
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = "3"
     model = XLSRAASIST(model_dir="yourpath/huggingface/wav2vec2-xls-r-300m/",freeze=True).cuda()
