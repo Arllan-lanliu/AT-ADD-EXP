@@ -15,6 +15,67 @@ from scipy import signal
 from RawBoost import process_Rawboost_feature, PitchShiftAugment, SpecAugmentForAudio
 
 
+# Per-type sample budget for dev-set subsampling.
+_DEV_SUBSAMPLE_BUDGET = {
+    "speech":  5000,
+    "sound":   5000,
+    "singing": 4000,
+    "music":   3000,
+}
+
+
+def _stratified_sample(rows, target_n, rng):
+    """
+    Sample up to *target_n* rows from *rows*, distributed as evenly as
+    possible across all (label, generator) cells.
+
+    - rows: list of (filename, class_type, label, generator) tuples
+    - target_n: desired number of samples
+    - rng: random.Random instance (for reproducibility)
+
+    If len(rows) <= target_n the full list is returned unchanged.
+    Small cells (fewer items than their fair share) contribute all their
+    rows; the saved budget is redistributed to the remaining cells.
+    """
+    if len(rows) <= target_n:
+        return list(rows)
+
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for r in rows:
+        groups[(r[2], r[3])].append(r)   # key = (label, generator)
+
+    remaining_budget = target_n
+    remaining_keys = sorted(groups.keys())
+    selected = []
+
+    # Iteratively absorb cells that are smaller than their fair share,
+    # then redistribute the freed budget to the surviving larger cells.
+    changed = True
+    while changed and remaining_keys:
+        changed = False
+        fair_share = remaining_budget / len(remaining_keys)
+        next_keys = []
+        for k in remaining_keys:
+            if len(groups[k]) <= fair_share:
+                selected.extend(groups[k])
+                remaining_budget -= len(groups[k])
+                changed = True
+            else:
+                next_keys.append(k)
+        remaining_keys = next_keys
+
+    # All surviving cells are larger than their fair share — allocate evenly.
+    if remaining_keys:
+        per_cell = remaining_budget // len(remaining_keys)
+        extra    = remaining_budget %  len(remaining_keys)
+        for i, k in enumerate(remaining_keys):
+            n = per_cell + (1 if i < extra else 0)
+            selected.extend(rng.sample(groups[k], n))
+
+    return selected
+
+
 def torchaudio_load(filepath):
     wave, sr = librosa.load(filepath, sr=16000)
     waveform = torch.Tensor(np.expand_dims(wave, axis=0))
@@ -92,7 +153,9 @@ class atadd_dataset(Dataset):
                  rawboost=False, musanrir=False, audio_length=64600, class_rawboost=False,
                  filter_types=None,
                  aug_probs=None,
-                 music_aug_method="pitch_shift"):
+                 music_aug_method="spec_augment",
+                 dev_subsample=False,
+                 dev_subsample_seed=42):
         """
         Args:
             aug_probs: dict mapping audio type → augmentation probability, e.g.
@@ -104,6 +167,14 @@ class atadd_dataset(Dataset):
                               "pitch_shift"  → PitchShiftAugment (±1–3 semitones)
                               "spec_augment" → SpecAugmentForAudio (freq-band masking)
                        speech / sound / singing always use process_Rawboost_feature(algo=5).
+            dev_subsample: When True, subsample the loaded rows per audio type using
+                           stratified sampling over (label, generator) cells.
+                           Budgets are defined in _DEV_SUBSAMPLE_BUDGET:
+                             speech / sound / singing → 2000 samples each
+                             music                   → 1000 samples
+                           Applied after filter_types filtering.  Always pass
+                           dev_subsample=True for dev datasets.
+            dev_subsample_seed: Random seed for reproducible dev subsampling.
         """
         super(atadd_dataset, self).__init__()
 
@@ -121,6 +192,8 @@ class atadd_dataset(Dataset):
         self.musanrir = musanrir
         self.AudioAugmentor = AudioAugmentor()
         self.class_rawboost = class_rawboost
+        self.dev_subsample = dev_subsample
+        self.dev_subsample_seed = dev_subsample_seed
         self.filter_types = None
         if filter_types is not None:
             self.filter_types = frozenset(t.lower() for t in filter_types)
@@ -164,6 +237,16 @@ class atadd_dataset(Dataset):
                 if self.filter_types is not None and class_type.lower() not in self.filter_types:
                     continue
                 self.all_files.append((filename, class_type, label, generator))
+
+        # Dev-set subsampling: stratified by (label, generator) per audio type.
+        # Applied regardless of whether filter_types is set — when filter_types
+        # is None all four types are active and each is subsampled independently.
+        if self.dev_subsample:
+            self.all_files = self._apply_dev_subsample(
+                self.all_files, seed=self.dev_subsample_seed
+            )
+
+        self._print_stats()
 
     def __len__(self):
         return len(self.all_files)
@@ -236,6 +319,108 @@ class atadd_dataset(Dataset):
             return waveform
 
         return waveform
+
+    def _print_stats(self):
+        """Print dataset statistics after __init__ finishes."""
+        from collections import Counter, defaultdict
+
+        role = "Dev  " if self.dev_subsample else "Train"
+        sep  = "=" * 68
+
+        # ── per-type sample counts ────────────────────────────────────────
+        type_counts = Counter(item[1] for item in self.all_files)
+        total = len(self.all_files)
+
+        lines = [sep,
+                 f"[{role}] {self.path_to_protocol}",
+                 f"  Total samples : {total}",
+                 f"  Type counts   :"]
+        TYPE_ORDER = ["speech", "sound", "singing", "music"]
+        for t in TYPE_ORDER:
+            cnt = type_counts.get(t, 0)
+            if cnt:
+                lines.append(f"    {t:<10} {cnt:>6}")
+        for t in sorted(type_counts):
+            if t not in TYPE_ORDER:
+                lines.append(f"    {t:<10} {type_counts[t]:>6}")
+
+        # ── train: augmentation settings ──────────────────────────────────
+        if not self.dev_subsample:
+            lines.append("  Augmentation  :")
+            for t in TYPE_ORDER:
+                if type_counts.get(t, 0) == 0:
+                    continue
+                if self.class_rawboost and t in ("sound", "singing"):
+                    aug_desc = "RawBoost(algo=5)  [class_rawboost]"
+                elif self.aug_probs and t in self.aug_probs:
+                    p = self.aug_probs[t]
+                    if t == "music":
+                        method = getattr(self, "music_aug_method", "pitch_shift")
+                        aug_desc = f"{method}  p={p}"
+                    else:
+                        aug_desc = f"RawBoost(algo=5)  p={p}"
+                else:
+                    aug_desc = "none"
+                lines.append(f"    {t:<10}  {aug_desc}")
+
+        # ── dev: label + generator distribution per type ──────────────────
+        else:
+            by_type = defaultdict(list)
+            for item in self.all_files:
+                by_type[item[1]].append(item)
+
+            for t in TYPE_ORDER:
+                items = by_type.get(t)
+                if not items:
+                    continue
+                label_cnt = Counter(item[2] for item in items)   # real / fake
+                gen_cnt   = Counter(item[3] for item in items)   # generator name
+
+                lines.append(f"  [{t}]  {len(items)} samples")
+                lines.append(f"    label     : real={label_cnt.get('real', 0)}"
+                              f"  fake={label_cnt.get('fake', 0)}")
+                # Sort generators: real '-' first, then by count desc
+                gen_sorted = sorted(gen_cnt.items(),
+                                    key=lambda kv: (kv[0] != '-', -kv[1]))
+                gen_str = "  ".join(f"{g}:{n}" for g, n in gen_sorted)
+                lines.append(f"    generator : {gen_str}")
+
+        lines.append(sep)
+        print("\n".join(lines))
+
+    @staticmethod
+    def _apply_dev_subsample(all_files, seed=42):
+        """
+        Subsample *all_files* per audio type using stratified sampling.
+
+        Each type present in the list is sampled independently according to
+        _DEV_SUBSAMPLE_BUDGET.  Types not listed in the budget fall back to
+        2000 samples.  If a type has fewer rows than its budget, all its rows
+        are kept without sampling.
+
+        Returns a new shuffled list.
+        """
+        import random as _random
+        from collections import defaultdict
+
+        rng = _random.Random(seed)
+
+        by_type = defaultdict(list)
+        for item in all_files:
+            by_type[item[1]].append(item)   # item[1] = class_type string
+
+        sampled = []
+        for type_name, items in sorted(by_type.items()):
+            budget = _DEV_SUBSAMPLE_BUDGET.get(type_name, 2000)
+            chosen = _stratified_sample(items, budget, rng)
+            sampled.extend(chosen)
+            kept = len(chosen)
+            total = len(items)
+            print(f"[dev_subsample] {type_name}: {kept}/{total} samples kept "
+                  f"(budget={budget})")
+
+        rng.shuffle(sampled)
+        return sampled
 
     def collate_fn(self, samples):
         return default_collate(samples)

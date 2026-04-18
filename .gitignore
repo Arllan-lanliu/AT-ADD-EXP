@@ -1,5 +1,6 @@
 unused_file/
 ckpt_t2/
+ckpt_t2_prev/
 model_comparison_dev.csv
 __pycache__/
 0_record.txt

@@ -41,6 +41,10 @@ def parse_args():
     parser.add_argument("--out_dir", type=str, default=os.path.join("./ckpt_t2/ft-w2v2aasist/analysis_dev_attention"))
     parser.add_argument("--tsne_perplexity", type=float, default=30.0)
     parser.add_argument("--tsne_seed", type=int, default=1234)
+    parser.add_argument(
+        "--metrics_only", action="store_true",
+        help="Only run inference and print metrics; skip attention heatmaps and t-SNE."
+    )
     args = parser.parse_args()
 
     with open(os.path.join(args.model_path, "args.json"), "r", encoding="utf-8") as f:
@@ -255,16 +259,17 @@ def main():
                     predict = "real" if probs_real[i] >= 0.5 else "fake"
                     writer.writerow([name, predict, t, y])
 
-                    if visual:
-                        sq = to_square(ll_mean[i], args.attn_frames)
-                    else:
-                        sq = None
-                    group_mats[(t, y)].append(sq)
+                    if not args.metrics_only:
+                        if visual:
+                            sq = to_square(ll_mean[i], args.attn_frames)
+                        else:
+                            sq = None
+                        group_mats[(t, y)].append(sq)
 
-                    tsne_features.append(feat_np[i].reshape(-1))
-                    tsne_classes.append(f"{t}_{y}")
-                    tsne_types.append(t)
-                    tsne_labels.append(y)
+                        tsne_features.append(feat_np[i].reshape(-1))
+                        tsne_classes.append(f"{t}_{y}")
+                        tsne_types.append(t)
+                        tsne_labels.append(y)
 
     print(f"[score] saved: {score_path}")
     import pandas as pd
@@ -311,13 +316,17 @@ def main():
     print(
         "{:.4f}\t\t\t{:.4f}\t{:.4f}\t{:.4f}\t{:.4f}".format(
             track2_score,
-            type_macro_f1["speech"],
-            type_macro_f1["sound"],
-            type_macro_f1["singing"],
-            type_macro_f1["music"],
+            type_macro_f1.get("speech", float("nan")),
+            type_macro_f1.get("sound",  float("nan")),
+            type_macro_f1.get("singing",float("nan")),
+            type_macro_f1.get("music",  float("nan")),
         )
     )
 
+    if args.metrics_only:
+        print(f"[done] metrics_only mode — skipped attention heatmaps and t-SNE.")
+        print(f"[done] score file: {score_path}")
+        return
 
     # Prepare global color scales so all avg_* share one scale,
     # and all sum_* share one scale for direct visual comparison.

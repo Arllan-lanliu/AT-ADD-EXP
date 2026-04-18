@@ -123,6 +123,7 @@ python main_train.py \
     --eval_steps          ${eval_steps} \
     --eval_warmup_steps   ${eval_warmup_steps} \
     --patience            ${patience} \
+    --filter_types   ${filter_types} \
     --aug_speech     ${aug_speech} \
     --aug_sound      ${aug_sound} \
     --aug_singing    ${aug_singing} \

@@ -283,6 +283,7 @@ def pre_data(args):
             audio_length=args.audio_len,
             filter_types=ft,
             # aug_probs intentionally omitted: dev is never augmented
+            dev_subsample=True,
         )
         train_set = [atadd_t1_trainset]
         dev_set = [atadd_t1_devset]
@@ -303,6 +304,7 @@ def pre_data(args):
             audio_length=args.audio_len,
             filter_types=ft,
             # aug_probs intentionally omitted: dev is never augmented
+            dev_subsample=True,
         )
         train_set = [atadd_t2_trainset]
         dev_set = [atadd_t2_devset]
