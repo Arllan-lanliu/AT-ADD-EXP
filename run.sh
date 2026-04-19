@@ -1,5 +1,5 @@
 gpu=0
-config=conf/experiments/xlsr_mert_add.yaml
+config=conf/base.yaml
 model_path=""            # 留空则自动从 config 的 out_fold 读取
 RESUME=0                 # 1 = 从 checkpoint 继续训练（自动加载 model_path/config.yaml）
 RUN_TRAIN=1              # 1 = 训练
