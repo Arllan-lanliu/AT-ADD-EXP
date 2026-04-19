@@ -1,52 +1,17 @@
-<h1 align="center">AT-ADD Challenge Baseline</h1>
+<h1 align="center">AT-ADD Challenge: ThreeTO</h1>
 
-<p align="center">
-  <a href="https://www.at-add.com"><img src="https://img.shields.io/badge/🏠%20Home%20Page-AT--ADD-ff7f0e?style=for-the-badge"></a>
-  <img src="https://img.shields.io/badge/-%20-white?style=flat-square" width="10" height="28">
-  <a href="https://arxiv.org/abs/2604.08184"><img src="https://img.shields.io/badge/📄%20Evaluation%20Plan-arXiv-b31b1b?style=for-the-badge"></a>
-</p>
-
-<p align="center">
-  <a href="https://huggingface.co/datasets/xieyuankun/AT-ADD-Track1"><img src="https://img.shields.io/badge/📊%20Track1%20Data%20%26%20Registration-HuggingFace-FFD21E?style=for-the-badge"></a>
-  <img src="https://img.shields.io/badge/-%20-white?style=flat-square" width="10" height="28">
-  <a href="https://huggingface.co/datasets/xieyuankun/AT-ADD-Track2"><img src="https://img.shields.io/badge/📊%20Track2%20Data%20%26%20Registration-HuggingFace-FFD21E?style=for-the-badge"></a>
-</p>
-
-<p align="center">
-  <a href="https://www.codabench.org/competitions/15477"><img src="https://img.shields.io/badge/🏆%20Track1%20Competition-Codabench-4CAF50?style=for-the-badge"></a>
-  <img src="https://img.shields.io/badge/-%20-white?style=flat-square" width="10" height="28">
-  <a href="https://www.codabench.org/competitions/15481"><img src="https://img.shields.io/badge/🏆%20Track2%20Competition-Codabench-4CAF50?style=for-the-badge"></a>
-</p>
-
-<p align="center">
-  <img src="figure/intro.png" style="width: 100%; height: auto;">
-</p>
-
-This repository provides the official baseline implementations of conventional and self-supervised learning (SSL)-based countermeasures for the **AT-ADD: All-Type Audio Deepfake Detection Challenge**.  
-
-For the ALLM-based baseline, please refer to:  
-https://github.com/yangchunmian123/AT-ADD-ALLM-Baseline
+This repository provides the EXP of conventional and self-supervised learning (SSL)-based countermeasures for the **AT-ADD: All-Type Audio Deepfake Detection Challenge**.  
 
 ---
 
 ## 1. Data Preparation
 
-### Dataset Structure
+**Dataset url** : https://huggingface.co/datasets/xieyuankun/AT-ADD-Track2
+
 
 Please download the AT-ADD dataset and organize it as follows:
 
 ```
-atadd/
-├── T1/
-│   ├── train/
-│   │   └── *.wav
-│   ├── dev/
-│   │   └── *.wav
-│   ├── eval/
-│   │   └── *.wav
-│   └── label/
-│       ├── train.csv
-│       ├── dev.csv
 ├── T2/
 │   ├── train/
 │   │   └── *.wav
@@ -54,157 +19,41 @@ atadd/
 │   │   └── *.wav
 │   ├── eval/
 │   │   └── *.wav
-│   └── label/
+│   └── labels/
 │       ├── train.csv
 │       ├── dev.csv
 ```
 
 ---
 
-### Configuration
-
-Modify the dataset paths in `config.py` or pass them via command-line arguments:
-
+## 2. SSL model download
 ```
---atadd_t1_train_audio
---atadd_t1_train_label
---atadd_t1_dev_audio
---atadd_t1_dev_label
---atadd_t1_eval_audio
-
---atadd_t2_train_audio
---atadd_t2_train_label
---atadd_t2_dev_audio
---atadd_t2_dev_label
---atadd_t2_eval_audio
+>> cd yourmodeldir/
+>> pip install huggingface-hub
+>> export HF_ENDPOINT=https://hf-mirror.com
+>> hf download facebook/wav2vec2-xls-r-300m --local-dir ./wav2vec2-xls-r-300m
+>> hf download microsoft/wavlm-large --local-dir ./wavlm-large
+>> hf download m-a-p/MERT-v1-330M --local-dir ./MERT-v1-330M
+>> hf download nsivaku/nithin_checkpoints --local-dir ./BEATs_iter3 
+>> hf download laion/larger_clap_music_and_speech --local-dir ./larger_clap_music_and_speech 
 ```
 
 ---
-
-## 2. Environment Setup
-
-```bash
-conda create -n atadd3.10 python=3.10.13
-conda activate atadd3.10
-pip install -r requirements.txt
+## 3. Environment Setup
+```
+>> conda create -n atadd3.10 python=3.10.13
+>> conda activate atadd3.10
+>> pip install -r requirements.txt
 ```
 
 ---
-
-## 3. SSL Model Preparation
-
-Download the pre-trained SSL model from Hugging Face:
-
-```bash
-huggingface-cli download facebook/wav2vec2-xls-r-300m \
-  --local-dir yourpath/huggingface/wav2vec2-xls-r-300m/
+## 4. Training and Evaluation
+```
+>> git clone git@github.com:Arllan-lanliu/AT-ADD-EXP.git
+>> cd ./AT-ADD-EXP
+>> conda activate atadd3.10
+>> chmod +x ./run.sh
+>> ./run.sh
 ```
 
-Then update the path in `config.py`:
 
-```
---xlsr yourpath/huggingface/wav2vec2-xls-r-300m
-
-```
-gpu=2
-model_name=ft-beats_aasist
-model_path=./ckpt_t2/baseline_ft-beats_aasist_epoch40
-
-PYTHONWARNINGS="ignore" python main_train.py --gpu ${gpu} --train_task atadd-track2 --model ft-beats_aasist \
-        --num_epochs 40 --num_workers 4 --batch_size 40 \
-         --interval 2 --seed 1234 --lr 0.000001 \
-        --out_fold ${model_path} --continue_training
----
-
-## 4. Training
-
-### Baseline Models
-
-⚠️ The hyperparameters in the provided scripts (e.g., learning rate, batch size, random seed) follow the settings reported in the original papers. Modifying them—especially for fine-tuning—may lead to noticeable performance differences.
-
-```bash
-cd AT-ADD-Baseline
-bash train.sh
-```
-
----
-
-## 5. Evaluation
-
-```bash
-bash test.sh
-```
-
-This will generate `logits.csv` in the corresponding checkpoint directory.
-
-### Generate Predictions
-
-```bash
-python generate_predict.py
-```
-
-The script applies a default threshold of **0.5** to produce `predict.csv`, which can be directly used for submission.
-
----
-
-## 6. Additional Baselines
-
-This implementation is adapted from:
-
-https://github.com/xieyuankun/All-Type-ADD
-
-Several additional models are also supported (see `config.py`):
-
-```python
-choices = [
-    'specresnet', 'aasist',
-    'fr-w2v2aasist', 'fr-wavlmaasist', 'fr-mertaasist',
-    'ft-w2v2aasist', 'ft-wavlmaasist', 'ft-mertaasist',
-    'pt-w2v2aasist', 'wpt-w2v2aasist',
-    'pt-wavlmaasist', 'wpt-wavlmaasist',
-    'pt-mertaasist', 'wpt-mertaasist'
-]
-```
-
-Feel free to explore and extend these models.
-
-Additionally, this framework supports **data augmentation** methods such as MUSAN, RIR, and RawBoost. These augmentations can be enabled in the dataset initialization, and are disabled by default.
-
-## Acknowledgment
-
-We gratefully acknowledge the following works, which serve as important baselines and foundations for this repository:
-
-**AASIST**
-```bibtex
-@inproceedings{jung2022aasist,
-  title={Aasist: Audio anti-spoofing using integrated spectro-temporal graph attention networks},
-  author={Jung, Jee-weon and Heo, Hee-Soo and Tak, Hemlata and Shim, Hye-jin and Chung, Joon Son and Lee, Bong-Jin and Yu, Ha-Jin and Evans, Nicholas},
-  booktitle={Proceedings of the ICASSP},
-  pages={6367--6371},
-  year={2022}
-}
-```
-
-**FT-XLSR-AASIST**
-```bibtex
-@inproceedings{tak2022automatic,
-  title={Automatic Speaker Verification Spoofing and Deepfake Detection Using Wav2vec 2.0 and Data Augmentation},
-  author={Tak, Hemlata and Todisco, Massimiliano and Wang, Xin and Jung, Jee-weon and Yamagishi, Junichi and Evans, Nicholas},
-  booktitle={The Speaker and Language Recognition Workshop (Odyssey 2022)},
-  year={2022},
-  organization={ISCA}
-}
-```
-
-**WPT-XLSR-AASIST**
-```bibtex
-@inproceedings{xie2026detect,
-  title={Detect all-type deepfake audio: Wavelet prompt tuning for enhanced auditory perception},
-  author={Xie, Yuankun and Fu, Ruibo and Wang, Xiaopeng and Wang, Zhiyong and Cao, Songjun and Ma, Long and Cheng, Haonan and Ye, Long},
-  booktitle={Proceedings of the AAAI Conference on Artificial Intelligence},
-  volume={40},
-  number={42},
-  pages={35922--35930},
-  year={2026}
-}
-```

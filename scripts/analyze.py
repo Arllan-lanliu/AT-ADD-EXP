@@ -2,10 +2,10 @@ import argparse
 import csv
 import json
 import os
+import sys
 from collections import defaultdict
 
 import matplotlib
-
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,8 +15,11 @@ from sklearn.manifold import TSNE
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from eval_dataset import atadd_eval_dataset
-from generate_score import build_model
+# Allow running as a top-level script from the project root.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from model.model import build_model
+from data.dataset import atadd_eval_dataset
 
 
 VALID_TYPES = ("speech", "sound", "music", "singing")
@@ -202,7 +205,7 @@ def main():
     label_meta = load_label_meta(args.label_path)
     print(f"[meta] loaded labels: {len(label_meta)}")
 
-    feat_model = build_model(args)
+    feat_model = build_model(args).to(args.device)
     ckpt_path = os.path.join(args.model_path, "atadd_model.pt")
     state = torch.load(ckpt_path, map_location=args.device)
     feat_model.load_state_dict(state)

@@ -1,0 +1,49 @@
+# ── Data paths ────────────────────────────────────────────────────────────────
+data:
+  # Track 2
+  atadd_t2_train_audio: /home/new_disk/liulan/workspace/dataset/at_add_track2/train
+  atadd_t2_train_label: /home/new_disk/liulan/workspace/dataset/at_add_track2/labels/train.csv
+  atadd_t2_dev_audio:   /home/new_disk/liulan/workspace/dataset/at_add_track2/dev
+  atadd_t2_dev_label:   /home/new_disk/liulan/workspace/dataset/at_add_track2/labels/dev.csv
+  atadd_t2_eval_audio:  /home/new_disk/liulan/workspace/dataset/at_add_track2/eval
+
+# ── SSL model paths ───────────────────────────────────────────────────────────
+ssl:
+  xlsr:  /home/new_disk/liulan/workspace/otherfiles/huggingface/wav2vec2-xls-r-300m
+  wavlm: /home/new_disk/liulan/workspace/otherfiles/huggingface/wavlm-large
+  mert:  /home/new_disk/liulan/workspace/otherfiles/huggingface/MERT-v1-330M
+  beats: /home/new_disk/liulan/workspace/otherfiles/huggingface/BEATs_iter3
+  clap:  /home/new_disk/liulan/workspace/otherfiles/huggingface/larger_clap_music_and_speech
+
+# ── Task & output ─────────────────────────────────────────────────────────────
+filter_types: speech   # Omit or empty = use all types.
+train_task: atadd-track2
+model: ft-w2v2aasist
+#fusion: add                  # sed for dual-SSL models
+save_best_by: f1             # loss | eer | f1
+out_fold: ./ckpt_t2/speech_ft-w2v2aasist_f1
+
+# ── Audio augmentation (all disabled by default) ──────────────────────────────
+aug:
+  aug_speech:          0.0
+  aug_sound:           0.0
+  aug_singing:         0.0
+  aug_music:           0.0
+  music_aug_method:    spec_augment   # pitch_shift | spec_augment
+
+# ── Training hyperparameters ──────────────────────────────────────────────────
+num_epochs:  100
+batch_size:  24
+lr:          0.000001
+lr_decay:    0.5
+interval:    2
+num_workers: 4
+
+# ── Evaluation schedule ───────────────────────────────────────────────────────
+eval_steps:        200    # sample-dev eval every N steps
+full_eval_steps:   2000   # full-dev eval every N steps
+eval_warmup_steps: 2000   # skip all evals for the first N global steps
+patience:          20
+
+
+

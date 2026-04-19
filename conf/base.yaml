@@ -1,0 +1,50 @@
+# ── Data paths ────────────────────────────────────────────────────────────────
+data:
+  # Track 2
+  atadd_t2_train_audio: your_path/at_add_track2/train
+  atadd_t2_train_label: your_path/at_add_track2/labels/train.csv
+  atadd_t2_dev_audio:   your_path/at_add_track2/dev
+  atadd_t2_dev_label:   your_path/at_add_track2/labels/dev.csv
+  atadd_t2_eval_audio:  your_path/at_add_track2/eval
+
+# ── SSL model paths ───────────────────────────────────────────────────────────
+ssl:
+  xlsr:  your_path/wav2vec2-xls-r-300m
+  wavlm: your_path/wavlm-large
+  mert:  your_path/MERT-v1-330M
+  beats: your_path/BEATs_iter3
+  clap:  your_path/larger_clap_music_and_speech
+
+# ── Task & output ─────────────────────────────────────────────────────────────
+filter_types: speech,sound,music,singing   # Omit or empty = use all types.
+train_task: atadd-track2
+out_fold: ./ckpt_update_t2/default_run
+
+model: ft-xlsrmertaasist
+fusion: add                  # sed for dual-SSL models
+save_best_by: f1             # loss | eer | f1
+
+# ── Audio augmentation (all disabled by default) ──────────────────────────────
+aug:
+  aug_speech:          0.0
+  aug_sound:           0.0
+  aug_singing:         0.0
+  aug_music:           0.0
+  music_aug_method:    spec_augment   # pitch_shift | spec_augment
+
+# ── Training hyperparameters ──────────────────────────────────────────────────
+num_epochs:  5
+batch_size:  24
+lr:          0.000001
+lr_decay:    0.5    # LR multiplied by lr_decay every `interval` epochs
+interval:    2
+num_workers: 4
+
+# ── Evaluation schedule ───────────────────────────────────────────────────────
+eval_steps:        200    # sample-dev eval every N steps (0 = epoch-end only)
+full_eval_steps:   2000   # full-dev eval every N steps (0 = disabled)
+eval_warmup_steps: 2000   # skip all evals for the first N global steps
+patience:          0      # early-stopping patience (sample-dev evals); 0 = off
+
+
+

@@ -1,80 +1,15 @@
-#!/usr/bin/python3
-
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 import os
 import librosa
 from torch.utils.data.dataloader import default_collate
-import glob
 import random
-import numpy
-import soundfile
 import csv
-from scipy import signal
-from RawBoost import process_Rawboost_feature, PitchShiftAugment, SpecAugmentForAudio
 
-
-# Per-type sample budget for dev-set subsampling.
-_DEV_SUBSAMPLE_BUDGET = {
-    "speech":  5000,
-    "sound":   5000,
-    "singing": 4000,
-    "music":   3000,
-}
-
-
-def _stratified_sample(rows, target_n, rng):
-    """
-    Sample up to *target_n* rows from *rows*, distributed as evenly as
-    possible across all (label, generator) cells.
-
-    - rows: list of (filename, class_type, label, generator) tuples
-    - target_n: desired number of samples
-    - rng: random.Random instance (for reproducibility)
-
-    If len(rows) <= target_n the full list is returned unchanged.
-    Small cells (fewer items than their fair share) contribute all their
-    rows; the saved budget is redistributed to the remaining cells.
-    """
-    if len(rows) <= target_n:
-        return list(rows)
-
-    from collections import defaultdict
-    groups = defaultdict(list)
-    for r in rows:
-        groups[(r[2], r[3])].append(r)   # key = (label, generator)
-
-    remaining_budget = target_n
-    remaining_keys = sorted(groups.keys())
-    selected = []
-
-    # Iteratively absorb cells that are smaller than their fair share,
-    # then redistribute the freed budget to the surviving larger cells.
-    changed = True
-    while changed and remaining_keys:
-        changed = False
-        fair_share = remaining_budget / len(remaining_keys)
-        next_keys = []
-        for k in remaining_keys:
-            if len(groups[k]) <= fair_share:
-                selected.extend(groups[k])
-                remaining_budget -= len(groups[k])
-                changed = True
-            else:
-                next_keys.append(k)
-        remaining_keys = next_keys
-
-    # All surviving cells are larger than their fair share — allocate evenly.
-    if remaining_keys:
-        per_cell = remaining_budget // len(remaining_keys)
-        extra    = remaining_budget %  len(remaining_keys)
-        for i, k in enumerate(remaining_keys):
-            n = per_cell + (1 if i < extra else 0)
-            selected.extend(rng.sample(groups[k], n))
-
-    return selected
-
+from data.RawBoost import process_Rawboost_feature
+from data.Augmentor import AudioAugmentor, PitchShiftAugment, SpecAugmentForAudio
+from data.Sampler import _DEV_SUBSAMPLE_BUDGET, _stratified_sample
 
 def torchaudio_load(filepath):
     wave, sr = librosa.load(filepath, sr=16000)
@@ -97,60 +32,12 @@ def pad_dataset(wav, audio_length=64600):
     return waveform
 
 
-class AudioAugmentor:
-    def __init__(self, rir_path='/data/liulan/workspace/dataset/RIRS_NOISES', musan_path='/data/liulan/workspace/dataset/musan'):
-        self.noisetypes = ['noise', 'speech', 'music']
-        self.noisesnr = {'noise': [0, 15], 'speech': [13, 20], 'music': [5, 15]}
-        self.numnoise = {'noise': [1, 1], 'speech': [3, 8], 'music': [1, 1]}
-        self.noiselist = self._load_noiselist(musan_path)
-        self.rir_files = glob.glob(os.path.join(rir_path, '*/*/*/*.wav'))
-
-    def _load_noiselist(self, musan_path):
-        noiselist = {}
-        augment_files = glob.glob(os.path.join(musan_path, '*/*/*.wav'))
-        for file in augment_files:
-            category = file.split('/')[-3]
-            if category not in noiselist:
-                noiselist[category] = []
-            noiselist[category].append(file)
-        return noiselist
-
-    def add_rev(self, audio, audio_length):
-        rir_file = random.choice(self.rir_files)
-        rir, sr = soundfile.read(rir_file)
-        rir = numpy.expand_dims(rir.astype(numpy.float32), 0)
-        rir = rir / numpy.sqrt(numpy.sum(rir ** 2))
-        return signal.convolve(audio, rir, mode='full')[:, :audio_length]
-
-    def add_noise(self, audio, noisecat, audio_length):
-        clean_db = 10 * numpy.log10(numpy.mean(audio ** 2) + 1e-4)
-        numnoise = self.numnoise[noisecat]
-        noiselist = random.sample(self.noiselist[noisecat], random.randint(numnoise[0], numnoise[1]))
-        noises = []
-
-        for noise in noiselist:
-            noiseaudio, sr = soundfile.read(noise)
-            length = audio_length
-            if noiseaudio.shape[0] <= length:
-                shortage = length - noiseaudio.shape[0]
-                noiseaudio = numpy.pad(noiseaudio, (0, shortage), 'wrap')
-            start_frame = numpy.int64(random.random() * (noiseaudio.shape[0] - length))
-            noiseaudio = noiseaudio[start_frame:start_frame + length]
-            noiseaudio = numpy.stack([noiseaudio], axis=0)
-            noise_db = 10 * numpy.log10(numpy.mean(noiseaudio ** 2) + 1e-4)
-            noisesnr = random.uniform(self.noisesnr[noisecat][0], self.noisesnr[noisecat][1])
-            noises.append(numpy.sqrt(10 ** ((clean_db - noise_db - noisesnr) / 10)) * noiseaudio)
-
-        noise = numpy.sum(numpy.concatenate(noises, axis=0), axis=0, keepdims=True)
-        return noise + audio
-
-
 VALID_AUDIO_TYPES = frozenset({"speech", "sound", "music", "singing"})
 
 
 class atadd_dataset(Dataset):
     def __init__(self, path_to_audio, path_to_protocol,
-                 rawboost=False, musanrir=False, audio_length=64600, class_rawboost=False,
+                 rawboost=False, musanrir=False, audio_length=64600,
                  filter_types=None,
                  aug_probs=None,
                  music_aug_method="spec_augment",
@@ -191,7 +78,6 @@ class atadd_dataset(Dataset):
         self.rawboost = rawboost
         self.musanrir = musanrir
         self.AudioAugmentor = AudioAugmentor()
-        self.class_rawboost = class_rawboost
         self.dev_subsample = dev_subsample
         self.dev_subsample_seed = dev_subsample_seed
         self.filter_types = None
@@ -260,10 +146,6 @@ class atadd_dataset(Dataset):
         # if self.rawboost:
         #     waveform = waveform.squeeze(dim=0).detach().cpu().numpy()
         #     waveform = process_Rawboost_feature(waveform, sr=sr)
-
-        if self.class_rawboost and (class_type == "sound" or class_type == "singing"):
-            waveform = waveform.squeeze(dim=0).detach().cpu().numpy()
-            waveform = process_Rawboost_feature(waveform, sr=sr)
 
         # Per-type probabilistic augmentation (train only; dev passes aug_probs=None)
         if self.aug_probs is not None:
@@ -350,9 +232,7 @@ class atadd_dataset(Dataset):
             for t in TYPE_ORDER:
                 if type_counts.get(t, 0) == 0:
                     continue
-                if self.class_rawboost and t in ("sound", "singing"):
-                    aug_desc = "RawBoost(algo=5)  [class_rawboost]"
-                elif self.aug_probs and t in self.aug_probs:
+                if self.aug_probs and t in self.aug_probs:
                     p = self.aug_probs[t]
                     if t == "music":
                         method = getattr(self, "music_aug_method", "pitch_shift")
@@ -426,29 +306,29 @@ class atadd_dataset(Dataset):
         return default_collate(samples)
 
 
-if __name__ == "__main__":
-    dataset = atadd_dataset(
-        path_to_audio="/nas5_heyuan/xieyuankun/atadd/data/T2/train",
-        path_to_protocol="/nas5_heyuan/xieyuankun/atadd/data/T2/label/train.csv"
-    )
+class atadd_eval_dataset(Dataset):
+    def __init__(self, path_to_audio, audio_length=64600, exts=(".flac", ".wav")):
+        super(atadd_eval_dataset, self).__init__()
 
-    print("dataset size:", len(dataset))
+        self.path_to_audio = path_to_audio
+        self.audio_length = audio_length
 
-    real_count = sum(1 for _, label in dataset.all_files if label == "real")
-    fake_count = sum(1 for _, label in dataset.all_files if label == "fake")
+        self.all_files = sorted([
+            f for f in os.listdir(self.path_to_audio)
+            if f.lower().endswith(exts)
+        ])
 
-    print(f"real count: {real_count}")
-    print(f"fake count: {fake_count}")
+    def __len__(self):
+        return len(self.all_files)
 
-    if real_count > 0 and fake_count > 0:
-        print(f"real:fake = {real_count}:{fake_count}")
-        print(f"real/fake = {real_count / fake_count:.4f}")
-        print(f"fake/real = {fake_count / real_count:.4f}")
+    def __getitem__(self, idx):
+        filename = self.all_files[idx]
+        filepath = os.path.join(self.path_to_audio, filename)
 
-        max_count = max(real_count, fake_count)
-        weight_real = max_count / real_count   # label 0
-        weight_fake = max_count / fake_count   # label 1
+        waveform, sr = torchaudio_load(filepath)
+        waveform = pad_dataset(waveform, self.audio_length)
 
-        print(f"class weight for real(label=0): {weight_real:.4f}")
-        print(f"class weight for fake(label=1): {weight_fake:.4f}")
+        return waveform, filename
 
+    def collate_fn(self, samples):
+        return default_collate(samples)

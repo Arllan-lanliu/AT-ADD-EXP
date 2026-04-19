@@ -18,7 +18,7 @@ from collections import defaultdict
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 
-CKPT_ROOT = os.path.join(os.path.dirname(__file__), "ckpt_t2")
+CKPT_ROOT = os.path.join(os.path.dirname(__file__), "..", "ckpt_t2")
 
 # Priority list of relative paths to try inside each model directory.
 # Tuples of (relative_path, file_format)
@@ -251,7 +251,7 @@ def main():
     print(f"Score threshold for logit files: {SCORE_THRESHOLD}")
 
     # ── also save as CSV ──────────────────────────────────────────────────────
-    out_path = os.path.join(os.path.dirname(__file__), "model_comparison_dev.csv")
+    out_path = os.path.join(os.path.dirname(__file__), "..", "model_comparison_dev.csv")
     fieldnames = ["model", "source_file", "n_samples",
                   "overall_acc", "overall_f1"] + \
                  [f"{t}_acc" for t in AUDIO_TYPES] + \
