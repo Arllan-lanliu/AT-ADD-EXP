@@ -77,7 +77,8 @@ def initParams():
         type=str,
         default='loss',
         choices=['loss', 'eer', 'f1'],
-        help='Metric used to save the best model: loss, eer, or f1'
+        help='Which metric controls atadd_model.pt (legacy) and early-stopping patience; '
+             'best checkpoints for all three metrics are always saved separately.'
     )
 
     # generalized strategy
@@ -101,18 +102,35 @@ def initParams():
 
     # Per-type probabilistic augmentation (train set only; dev is never augmented)
     parser.add_argument('--aug_speech',  type=float, default=0.0,
-                        help="Probability [0,1] of applying RawBoost(algo=5) to each speech sample")
+                        help="Probability [0,1] of applying speech augmentation (--speech_aug_method)")
     parser.add_argument('--aug_sound',   type=float, default=0.0,
-                        help="Probability [0,1] of applying RawBoost(algo=5) to each sound sample")
+                        help="Probability [0,1] of applying RawBoost to each sound sample")
     parser.add_argument('--aug_music',   type=float, default=0.0,
                         help="Probability [0,1] of applying music augmentation to each music sample")
     parser.add_argument('--aug_singing', type=float, default=0.0,
-                        help="Probability [0,1] of applying RawBoost(algo=5) to each singing sample")
+                        help="Probability [0,1] of applying RawBoost to each singing sample")
     parser.add_argument('--music_aug_method', type=str, default='pitch_shift',
                         choices=['pitch_shift', 'spec_augment'],
                         help="Augmentation method for music samples: "
                              "pitch_shift (PitchShiftAugment, ±1-3 semitones) or "
                              "spec_augment (SpecAugmentForAudio, frequency-band masking)")
+    parser.add_argument('--speech_aug_method', type=str, default='rawboost',
+                        choices=['rawboost', 'pitch_shift', 'spec_augment'],
+                        help="Augmentation for speech when --aug_speech > 0: "
+                             "rawboost (per --rawboost_algo_speech), or pitch_shift / "
+                             "spec_augment like music.")
+
+    # Per-type RawBoost algorithm selection for speech / sound / singing.
+    # 0=none 1=LnL_conv 2=ISD_add 3=SSI_add 4=1+2+3 5=1+2(default) 6=1+3 7=2+3 8=parallel(1,2)
+    parser.add_argument('--rawboost_algo_speech',  type=int, default=5,
+                        choices=list(range(9)),
+                        help="RawBoost algo for speech  samples (default: 5 = LnL+ISD)")
+    parser.add_argument('--rawboost_algo_sound',   type=int, default=5,
+                        choices=list(range(9)),
+                        help="RawBoost algo for sound   samples (default: 5 = LnL+ISD)")
+    parser.add_argument('--rawboost_algo_singing', type=int, default=5,
+                        choices=list(range(9)),
+                        help="RawBoost algo for singing samples (default: 5 = LnL+ISD)")
 
     # Weights & Biases (set WANDB_API_KEY or run `wandb login`; WANDB_MODE=offline for no upload)
     parser.add_argument('--wandb_project', type=str, default='AT-ADD-Baseline',
@@ -136,7 +154,7 @@ def initParams():
         help='Comma-separated subset of audio types for train AND dev: speech,sound,music,singing. '
              'Omit or empty = use all types.',
     )
-
+    parser.add_argument('--no_dev_subsample', action='store_true', help="no dev subsample")
     args = parser.parse_args()
     args.filter_types_parsed = parse_filter_types_arg(args.filter_types)
     args.log_dir = os.path.join(args.out_fold, "logs")
@@ -218,17 +236,23 @@ def pre_model(args):
     loss = float("inf")
     eer = float("inf")
     f1 = -float("inf")
+    best_loss_track = float("inf")
+    best_eer_track = float("inf")
+    best_f1_track = -float("inf")
     if args.continue_training: # load from checkpoint
         ckpt_path = os.path.join(args.out_fold, 'checkpoint', 'latest.pt')
         if os.path.exists(ckpt_path):
             print(f"Loading checkpoint from {ckpt_path}")
-            checkpoint = torch.load(ckpt_path, map_location=args.device)
+            checkpoint = torch.load(ckpt_path, map_location=args.device, weights_only=False)
             feat_model.load_state_dict(checkpoint["model_state_dict"])
             feat_optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             start_epoch = checkpoint["epoch"] + 1
             loss = checkpoint["loss"]
             eer = checkpoint["eer"]
             f1 = checkpoint["f1"]
+            best_loss_track = checkpoint.get("best_loss_track", float("inf"))
+            best_eer_track = checkpoint.get("best_eer_track", float("inf"))
+            best_f1_track = checkpoint.get("best_f1_track", -float("inf"))
             print(f"Resumed from epoch {start_epoch}")
         else:
             print("Checkpoint not found, training from scratch")
@@ -240,14 +264,17 @@ def pre_model(args):
         weight = torch.FloatTensor([3.5, 1]).to(args.device)
 
     print(f"Using class weight: {weight.tolist()}")
-    print(f"Best model will be saved by: {args.save_best_by}")
+    print(f"atadd_model.pt follows --save_best_by={args.save_best_by}; "
+          f"also saving atadd_model_best_loss.pt / _best_eer.pt / _best_f1.pt")
 
     if args.base_loss == "ce": # default
         criterion = nn.CrossEntropyLoss(weight=weight)
     else:
         criterion = nn.BCEWithLogitsLoss()
     
-    return feat_model, feat_optimizer, criterion, [start_epoch, loss, eer, f1]
+    return feat_model, feat_optimizer, criterion, [
+        start_epoch, loss, eer, f1, best_loss_track, best_eer_track, best_f1_track,
+    ]
 
 def pre_data(args):
 
@@ -265,8 +292,17 @@ def pre_data(args):
     }
     train_aug_probs = {k: v for k, v in _aug_probs_raw.items() if v > 0.0} or None
     if train_aug_probs:
-        print(f"Per-type train augmentation: {train_aug_probs}  "
-              f"(music method: {args.music_aug_method})")
+        print(
+            f"Per-type train augmentation: {train_aug_probs}  "
+            f"(music: {args.music_aug_method}; speech: {args.speech_aug_method})"
+        )
+
+    # Per-type RawBoost algorithm selection (speech / sound / singing)
+    rawboost_algos = {
+        "speech":  args.rawboost_algo_speech,
+        "sound":   args.rawboost_algo_sound,
+        "singing": args.rawboost_algo_singing,
+    }
 
     if args.train_task == "atadd-track1":
         atadd_t1_trainset = atadd_dataset(
@@ -276,6 +312,8 @@ def pre_data(args):
             filter_types=ft,
             aug_probs=train_aug_probs,
             music_aug_method=args.music_aug_method,
+            speech_aug_method=args.speech_aug_method,
+            rawboost_algos=rawboost_algos,
         )
         atadd_t1_devset = atadd_dataset(
             args.atadd_t1_dev_audio,
@@ -283,7 +321,7 @@ def pre_data(args):
             audio_length=args.audio_len,
             filter_types=ft,
             # aug_probs intentionally omitted: dev is never augmented
-            dev_subsample=True,
+            dev_subsample=not args.no_dev_subsample,
         )
         train_set = [atadd_t1_trainset]
         dev_set = [atadd_t1_devset]
@@ -297,6 +335,8 @@ def pre_data(args):
             filter_types=ft,
             aug_probs=train_aug_probs,
             music_aug_method=args.music_aug_method,
+            speech_aug_method=args.speech_aug_method,
+            rawboost_algos=rawboost_algos,
         )
         atadd_t2_devset = atadd_dataset(
             args.atadd_t2_dev_audio,
@@ -304,7 +344,7 @@ def pre_data(args):
             audio_length=args.audio_len,
             filter_types=ft,
             # aug_probs intentionally omitted: dev is never augmented
-            dev_subsample=True,
+            dev_subsample=not args.no_dev_subsample,
         )
         train_set = [atadd_t2_trainset]
         dev_set = [atadd_t2_devset]
@@ -364,7 +404,15 @@ def train(args):
 
     # initialize model
     feat_model, feat_optimizer, criterion, infos = pre_model(args)
-    start_epoch, prev_loss, prev_eer, prev_f1 = infos
+    (
+        start_epoch,
+        prev_loss,
+        prev_eer,
+        prev_f1,
+        best_loss_track,
+        best_eer_track,
+        best_f1_track,
+    ) = infos
     
     # data
     trainOriDataLoader, valOriDataLoader, trainOri_flow, valOri_flow = pre_data(args)
@@ -384,7 +432,7 @@ def train(args):
     if use_wandb:
         run_name = args.wandb_run_name or os.path.basename(os.path.normpath(args.out_fold.rstrip('/')))
         wandb.init(
-            mode="offline",
+            mode="online",
             project=args.wandb_project,
             name=run_name,
             entity=args.wandb_entity,
@@ -400,7 +448,7 @@ def train(args):
 
         Returns True when early stopping should be triggered.
         """
-        nonlocal prev_loss, prev_eer, prev_f1, no_improve_count
+        nonlocal prev_loss, prev_eer, prev_f1, best_loss_track, best_eer_track, best_f1_track, no_improve_count
         t_eval = time.time()
         feat_model.eval()
         dev_loss_dict = defaultdict(list)
@@ -470,9 +518,9 @@ def train(args):
             }
 
         with open(os.path.join(args.log_dir, "dev_loss.log"), "a") as log:
-            log.write(str(tag) + "\t" + str(valLoss) + "\t" + str(val_eer) + "\t" + str(val_f1))
+            log.write(f"{tag}\t{valLoss:.6f}\t{val_eer:.6f}\t{val_f1:.6f}")
             for t in type_metrics:
-                log.write(f"\t{t}_EER:{type_metrics[t]['eer']:.4f}\t{t}_F1:{type_metrics[t]['f1']:.4f}")
+                log.write(f"\t{t}_EER:{type_metrics[t]['eer']:.6f}\t{t}_F1:{type_metrics[t]['f1']:.6f}")
             log.write("\n")
 
         if use_wandb:
@@ -488,19 +536,45 @@ def train(args):
             print(f"  [{t}] EER: {type_metrics[t]['eer']:.4f}  F1: {type_metrics[t]['f1']:.4f}")
         print(f"Evaluation time: {(time.time() - t_eval) / 60:.2f} min")
 
-        # --- save best model ---
+        # --- save best models (loss / eer / f1 each get their own file) ---
+        state = feat_model.state_dict()
+        if valLoss < best_loss_track:
+            best_loss_track = valLoss
+            torch.save(
+                state,
+                os.path.join(args.out_fold, "atadd_model_best_loss.pt"),
+            )
+            print(f"  → atadd_model_best_loss.pt (loss={valLoss:.6f})")
+        if val_eer < best_eer_track:
+            best_eer_track = val_eer
+            torch.save(
+                state,
+                os.path.join(args.out_fold, "atadd_model_best_eer.pt"),
+            )
+            print(f"  → atadd_model_best_eer.pt (eer={val_eer:.6f})")
+        if val_f1 > best_f1_track:
+            best_f1_track = val_f1
+            torch.save(
+                state,
+                os.path.join(args.out_fold, "atadd_model_best_f1.pt"),
+            )
+            print(f"  → atadd_model_best_f1.pt (f1={val_f1:.6f})")
+
+        # Legacy single file + early-stopping counter (--save_best_by)
         save_flag = False
         if args.save_best_by == "loss" and valLoss < prev_loss:
-            prev_loss = valLoss;  save_flag = True
+            prev_loss = valLoss
+            save_flag = True
         elif args.save_best_by == "eer" and val_eer < prev_eer:
-            prev_eer = val_eer;   save_flag = True
+            prev_eer = val_eer
+            save_flag = True
         elif args.save_best_by == "f1" and val_f1 > prev_f1:
-            prev_f1 = val_f1;     save_flag = True
+            prev_f1 = val_f1
+            save_flag = True
 
         if save_flag:
-            torch.save(feat_model.state_dict(),
-                       os.path.join(args.out_fold, 'atadd_model.pt'))
-            print(f"Best model updated by {args.save_best_by} at {tag}")
+            torch.save(state, os.path.join(args.out_fold, "atadd_model.pt"))
+            print(f"atadd_model.pt updated (--save_best_by={args.save_best_by}) at {tag}")
             no_improve_count = 0
         else:
             no_improve_count += 1
@@ -524,6 +598,9 @@ def train(args):
             "loss":                 valLoss,
             "eer":                  val_eer,
             "f1":                   val_f1,
+            "best_loss_track":      best_loss_track,
+            "best_eer_track":       best_eer_track,
+            "best_f1_track":          best_f1_track,
         }, os.path.join(args.out_fold, 'checkpoint', 'latest.pt'))
 
         return should_stop

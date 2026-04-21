@@ -154,6 +154,8 @@ class atadd_dataset(Dataset):
                  filter_types=None,
                  aug_probs=None,
                  music_aug_method="spec_augment",
+                 speech_aug_method="rawboost",
+                 rawboost_algos=None,
                  dev_subsample=False,
                  dev_subsample_seed=42):
         """
@@ -166,7 +168,14 @@ class atadd_dataset(Dataset):
                               aug_probs["music"] > 0.
                               "pitch_shift"  → PitchShiftAugment (±1–3 semitones)
                               "spec_augment" → SpecAugmentForAudio (freq-band masking)
-                       speech / sound / singing always use process_Rawboost_feature(algo=5).
+            speech_aug_method: when aug_probs["speech"] > 0: "rawboost" (uses
+                              rawboost_algos["speech"]), or "pitch_shift" / "spec_augment"
+                              (same style as music).
+            rawboost_algos: dict mapping audio type → RawBoost algo index for
+                            speech / sound / singing, e.g. {"speech": 3, "sound": 5, "singing": 5}.
+                            Defaults to algo=5 (LnL+ISD) for all three types.
+                            0=none 1=LnL_conv 2=ISD_add 3=SSI_add 4=1+2+3
+                            5=1+2  6=1+3     7=2+3     8=parallel(1,2)
             dev_subsample: When True, subsample the loaded rows per audio type using
                            stratified sampling over (label, generator) cells.
                            Budgets are defined in _DEV_SUBSAMPLE_BUDGET:
@@ -178,6 +187,7 @@ class atadd_dataset(Dataset):
         """
         super(atadd_dataset, self).__init__()
 
+        self.speech_aug_method = speech_aug_method
         self.path_to_audio = path_to_audio
         self.path_to_protocol = path_to_protocol
         self.audio_length = audio_length
@@ -194,6 +204,11 @@ class atadd_dataset(Dataset):
         self.class_rawboost = class_rawboost
         self.dev_subsample = dev_subsample
         self.dev_subsample_seed = dev_subsample_seed
+        # Per-type RawBoost algo; default to algo=5 for all three rawboost types.
+        _default_algos = {"speech": 5, "sound": 5, "singing": 5}
+        if rawboost_algos:
+            _default_algos.update(rawboost_algos)
+        self.rawboost_algos = _default_algos
         self.filter_types = None
         if filter_types is not None:
             self.filter_types = frozenset(t.lower() for t in filter_types)
@@ -209,11 +224,14 @@ class atadd_dataset(Dataset):
         self.aug_probs = None
         self._pitch_shift_aug = None
         self._spec_aug = None
+        self._speech_pitch_shift_aug = None
+        self._speech_spec_aug = None
         if aug_probs is not None:
             active = {k: float(v) for k, v in aug_probs.items() if float(v) > 0.0}
             if active:
                 self.aug_probs = active
                 self.music_aug_method = music_aug_method
+                self.speech_aug_method = speech_aug_method
                 # Pre-instantiate the music augmentor if music is in active probs
                 if "music" in active:
                     if music_aug_method == "pitch_shift":
@@ -225,6 +243,16 @@ class atadd_dataset(Dataset):
                         )
                     elif music_aug_method == "spec_augment":
                         self._spec_aug = SpecAugmentForAudio(sr=16000)
+                if "speech" in active:
+                    if speech_aug_method == "pitch_shift":
+                        self._speech_pitch_shift_aug = PitchShiftAugment(
+                            sr=16000,
+                            min_semitones=-3,
+                            max_semitones=3,
+                            exclude_zero=True,
+                        )
+                    elif speech_aug_method == "spec_augment":
+                        self._speech_spec_aug = SpecAugmentForAudio(sr=16000)
 
         self.all_files = []
         with open(self.path_to_protocol, 'r', encoding='utf-8-sig') as f:
@@ -287,9 +315,28 @@ class atadd_dataset(Dataset):
                         waveform = augmented
                     else:
                         waveform = torch.tensor(augmented, dtype=torch.float32)
+                elif class_type == "speech":
+                    if self._speech_pitch_shift_aug is not None:
+                        augmented = self._speech_pitch_shift_aug.apply(wav_np)
+                        waveform = (
+                            augmented
+                            if isinstance(augmented, torch.Tensor)
+                            else torch.tensor(np.asarray(augmented), dtype=torch.float32)
+                        )
+                    elif self._speech_spec_aug is not None:
+                        augmented = self._speech_spec_aug.apply(wav_np)
+                        waveform = (
+                            augmented
+                            if isinstance(augmented, torch.Tensor)
+                            else torch.tensor(np.asarray(augmented), dtype=torch.float32)
+                        )
+                    else:
+                        algo = self.rawboost_algos.get(class_type, 5)
+                        waveform = process_Rawboost_feature(wav_np, sr=sr, algo=algo)
                 else:
-                    # speech / sound / singing → RawBoost algo=5
-                    waveform = process_Rawboost_feature(wav_np, sr=sr, algo=5)
+                    # sound / singing → RawBoost with per-type algo
+                    algo = self.rawboost_algos.get(class_type, 5)
+                    waveform = process_Rawboost_feature(wav_np, sr=sr, algo=algo)
 
         waveform = pad_dataset(waveform, self.audio_length)
 
@@ -351,14 +398,25 @@ class atadd_dataset(Dataset):
                 if type_counts.get(t, 0) == 0:
                     continue
                 if self.class_rawboost and t in ("sound", "singing"):
-                    aug_desc = "RawBoost(algo=5)  [class_rawboost]"
+                    algo = self.rawboost_algos.get(t, 5)
+                    aug_desc = f"RawBoost(algo={algo})  [class_rawboost]"
                 elif self.aug_probs and t in self.aug_probs:
                     p = self.aug_probs[t]
                     if t == "music":
                         method = getattr(self, "music_aug_method", "pitch_shift")
                         aug_desc = f"{method}  p={p}"
+                    elif t == "speech":
+                        sm = getattr(self, "speech_aug_method", "rawboost")
+                        if sm == "pitch_shift":
+                            aug_desc = f"pitch_shift  p={p}"
+                        elif sm == "spec_augment":
+                            aug_desc = f"spec_augment  p={p}"
+                        else:
+                            algo = self.rawboost_algos.get(t, 5)
+                            aug_desc = f"RawBoost(algo={algo})  p={p}"
                     else:
-                        aug_desc = f"RawBoost(algo=5)  p={p}"
+                        algo = self.rawboost_algos.get(t, 5)
+                        aug_desc = f"RawBoost(algo={algo})  p={p}"
                 else:
                     aug_desc = "none"
                 lines.append(f"    {t:<10}  {aug_desc}")

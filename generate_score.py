@@ -20,6 +20,13 @@ def init():
 
     parser.add_argument('--model_path', type=str, required=True,
                         help="Path to the saved model directory")
+    parser.add_argument(
+        '--checkpoint',
+        type=str,
+        default='atadd_model.pt',
+        help='Weight file under model_path (default: atadd_model.pt). '
+             'Examples: atadd_model_best_f1.pt, atadd_model_best_eer.pt',
+    )
     parser.add_argument("--gpu", type=str, default="0",
                         help="GPU index")
     parser.add_argument("--batch_size", type=int, default=None,
@@ -143,7 +150,8 @@ def gen_binary_score(score_file, binary_score_file, threshold=0.5):
 if __name__ == "__main__":
     args = init()
 
-    ckpt_path = os.path.join(args.model_path, "atadd_model.pt")
+    ckpt_path = os.path.join(args.model_path, args.checkpoint)
+    print("Checkpoint:", ckpt_path)
     checkpoint = torch.load(ckpt_path, map_location=args.device)
 
     print("Model:", args.model)
