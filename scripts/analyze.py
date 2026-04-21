@@ -28,6 +28,59 @@ VALID_LABELS = ("real", "fake")
 
 
 
+def _load_train_config_dict(model_path: str) -> dict:
+    """Load flat training hyperparameters from ``{model_path}/config.yaml``."""
+    config_yaml = os.path.join(model_path, "config.yaml")
+    if not os.path.isfile(config_yaml):
+        raise FileNotFoundError(f"config.yaml not found in {model_path!r}")
+
+    from utils.config import ATADDConfig
+
+    train_cfg = ATADDConfig.from_yaml(config_yaml)
+    train_ns = train_cfg.to_namespace()
+    print(f"[analyze] training config: {config_yaml}")
+    d = vars(train_ns)
+    return {k: v for k, v in d.items() if not str(k).startswith("_")}
+
+
+def _find_model_checkpoint(model_path: str) -> str:
+    """Same resolution as ``scripts/inference.py``."""
+    all_dev_best = os.path.join(model_path, "checkpoint_all_dev", "best.pt")
+    if os.path.exists(all_dev_best):
+        print("Using checkpoint_all_dev/best.pt  (best F1 on full dev set)")
+        return all_dev_best
+
+    top3_json = os.path.join(model_path, "checkpoint_sample_dev", "top3.json")
+    if os.path.exists(top3_json):
+        with open(top3_json, encoding="utf-8") as f:
+            entries = json.load(f)
+        if entries:
+            best_entry = entries[0]
+            ckpt = best_entry["path"]
+            if os.path.exists(ckpt):
+                metric = best_entry.get("metric", "metric")
+                val = best_entry.get("metric_val", "?")
+                print(
+                    f"Using checkpoint_sample_dev/{os.path.basename(ckpt)}"
+                    f"  (sample-dev best {metric}={val:.4f},"
+                    f" step={best_entry['step']})"
+                )
+                return ckpt
+
+    legacy = os.path.join(model_path, "atadd_model.pt")
+    if os.path.exists(legacy):
+        print("Using legacy atadd_model.pt")
+        return legacy
+
+    raise FileNotFoundError(
+        f"No model checkpoint found in {model_path!r}.\n"
+        f"Expected one of:\n"
+        f"  {os.path.join(model_path, 'checkpoint_all_dev', 'best.pt')}\n"
+        f"  {top3_json} (with valid paths)\n"
+        f"  {legacy}"
+    )
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Analyze dev attention and features for a trained model."
@@ -36,12 +89,18 @@ def parse_args():
     parser.add_argument("--gpu", type=str, default="2")
     parser.add_argument("--batch_size", type=int, default=20)
     parser.add_argument("--eval_task", type=str, default="atadd-track2", choices=["atadd-track1", "atadd-track2"])
-    parser.add_argument("--eval_audio", type=str, default="/data/liulan/workspace/dataset/at_add_track2/dev")
-    parser.add_argument("--label_path", type=str, default="/data/liulan/workspace/dataset/at_add_track2/labels/dev.csv")
-    parser.add_argument("--audio_len", type=int, default=64600)
+    parser.add_argument(
+        "--eval_audio", type=str, default=None,
+        help="Dev audio directory (default: from saved training config)",
+    )
+    parser.add_argument(
+        "--label_path", type=str, default=None,
+        help="Dev label CSV (default: from saved training config)",
+    )
+    parser.add_argument("--audio_len", type=int, default=None)
     parser.add_argument("--attn_frames", type=int, default=200, help="Unified side length for attention maps.")
     parser.add_argument("--score_suffix", type=str, default="_dev")
-    parser.add_argument("--out_dir", type=str, default=os.path.join("./ckpt_t2/ft-w2v2aasist/analysis_dev_attention"))
+    parser.add_argument("--out_dir", type=str, default=None)
     parser.add_argument("--tsne_perplexity", type=float, default=30.0)
     parser.add_argument("--tsne_seed", type=int, default=1234)
     parser.add_argument(
@@ -50,8 +109,7 @@ def parse_args():
     )
     args = parser.parse_args()
 
-    with open(os.path.join(args.model_path, "args.json"), "r", encoding="utf-8") as f:
-        train_args = json.load(f)
+    train_args = _load_train_config_dict(args.model_path)
 
     for k, v in train_args.items():
         if not hasattr(args, k):
@@ -71,6 +129,17 @@ def parse_args():
         args.audio_len = int(train_args.get("audio_len", 64600))
     if args.out_dir is None:
         args.out_dir = os.path.join(args.model_path, "analysis_dev_attention")
+
+    if not args.eval_audio:
+        raise ValueError(
+            f"eval_audio is unset. Add dev audio path to {args.model_path}/config.yaml "
+            "(data.atadd_t*_dev_audio) or pass --eval_audio."
+        )
+    if not args.label_path:
+        raise ValueError(
+            f"label_path is unset. Add dev label CSV to {args.model_path}/config.yaml "
+            "(data.atadd_t*_dev_label) or pass --label_path."
+        )
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     args.cuda = torch.cuda.is_available()
@@ -206,7 +275,7 @@ def main():
     print(f"[meta] loaded labels: {len(label_meta)}")
 
     feat_model = build_model(args).to(args.device)
-    ckpt_path = os.path.join(args.model_path, "atadd_model.pt")
+    ckpt_path = _find_model_checkpoint(args.model_path)
     state = torch.load(ckpt_path, map_location=args.device)
     feat_model.load_state_dict(state)
 

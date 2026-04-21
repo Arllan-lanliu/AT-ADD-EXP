@@ -1,19 +1,21 @@
 # ── Data paths ────────────────────────────────────────────────────────────────
 data:
   # Track 2
-  atadd_t2_train_audio: /home/new_disk/liulan/workspace/dataset/at_add_track2/train
-  atadd_t2_train_label: /home/new_disk/liulan/workspace/dataset/at_add_track2/labels/train.csv
-  atadd_t2_dev_audio:   /home/new_disk/liulan/workspace/dataset/at_add_track2/dev
-  atadd_t2_dev_label:   /home/new_disk/liulan/workspace/dataset/at_add_track2/labels/dev.csv
-  atadd_t2_eval_audio:  /home/new_disk/liulan/workspace/dataset/at_add_track2/eval
+  atadd_t2_train_audio: /data7/tyx/dataset/at_add_track2/train
+  atadd_t2_train_label: /data7/tyx/dataset/at_add_track2/label/train.csv
+  atadd_t2_dev_audio:   /data7/tyx/dataset/at_add_track2/dev
+  atadd_t2_dev_label:   /data7/tyx/dataset/at_add_track2/label/dev.csv
+  atadd_t2_eval_audio:  /data7/tyx/dataset/at_add_track2/eval
+
 
 # ── SSL model paths ───────────────────────────────────────────────────────────
 ssl:
-  xlsr:  /home/new_disk/liulan/workspace/otherfiles/huggingface/wav2vec2-xls-r-300m
-  wavlm: /home/new_disk/liulan/workspace/otherfiles/huggingface/wavlm-large
-  mert:  /home/new_disk/liulan/workspace/otherfiles/huggingface/MERT-v1-330M
-  beats: /home/new_disk/liulan/workspace/otherfiles/huggingface/BEATs_iter3
-  clap:  /home/new_disk/liulan/workspace/otherfiles/huggingface/larger_clap_music_and_speech
+  xlsr:  /data7/tyx/huggingface/wav2vec2-xls-r-300m
+  wavlm: /data7/tyx/huggingface/wavlm-large
+  mert:  /data7/tyx/huggingface/MERT-v1-330M
+  beats: /data7/tyx/huggingface/BEATs_iter3
+  clap:  /data7/tyx/huggingface/larger_clap_music_and_speech
+
 
 # ── Task & output ─────────────────────────────────────────────────────────────
 filter_types: speech   # Omit or empty = use all types.
@@ -21,7 +23,7 @@ train_task: atadd-track2
 model: ft-w2v2aasist
 #fusion: add                  # sed for dual-SSL models
 save_best_by: f1             # loss | eer | f1
-out_fold: ./ckpt_t2/speech_ft-w2v2aasist_f1
+out_fold: ./ckpt_t2/speech_ftxlsr_f1_dynamic_eer
 
 # ── Audio augmentation (all disabled by default) ──────────────────────────────
 aug:
@@ -43,7 +45,17 @@ num_workers: 4
 eval_steps:        200    # sample-dev eval every N steps
 full_eval_steps:   2000   # full-dev eval every N steps
 eval_warmup_steps: 2000   # skip all evals for the first N global steps
-patience:          20
+patience:          80
+
+# ── Validation decision threshold (for F1 / per-type F1 in logs) ─────────────
+# fixed: use score_threshold (real if score >= threshold, else fake)
+# eer:   use EER operating threshold on the current dev loader each eval
+eval_threshold_mode: eer
+
+# Inference (eval set) with dev-calibrated EER threshold — first score dev audio, then:
+#   python scripts/inference.py --model_path ./ckpt_t2/speech_ftxlsr_f1 --eval_threshold_mode eer \
+#       --val_score_file ./ckpt_t2/speech_ftxlsr_f1/result/atadd-track2_logits_dev.csv \
+#       --eval_audio /path/to/at_add_track2/eval
 
 
 

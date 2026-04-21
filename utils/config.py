@@ -141,6 +141,7 @@ class PromptConfig:
 _VALID_TRAIN_TASKS = ("atadd-track1", "atadd-track2")
 _VALID_LOSSES      = ("ce", "bce")
 _VALID_SAVE_BY     = ("loss", "eer", "f1")
+_VALID_EVAL_THRESHOLD_MODES = ("fixed", "eer")
 _VALID_FUSIONS     = (
     "cat_linear", "gated", "cross_attn", "film", "type_aware", "proj512_cat", "add"
 )
@@ -189,6 +190,11 @@ class ATADDConfig:
     """Metric used to rank checkpoints: ``loss`` (lower is better), ``eer`` (lower), ``f1`` (higher)."""
     continue_training: bool  = False
 
+    eval_threshold_mode: str = "fixed"
+    """How to turn scores into hard predictions for F1: ``fixed`` uses ``score_threshold``; ``eer`` uses the EER operating threshold on the current eval split."""
+    score_threshold: float = 0.5
+    """Score cutoff when ``eval_threshold_mode`` is ``fixed`` (real if score >= threshold, else fake)."""
+
     # ── Sharpness-aware optimisation ─────────────────────────────────────────
     SAM:  bool = False
     ASAM: bool = False
@@ -218,6 +224,9 @@ class ATADDConfig:
         _validate_choice(self.base_loss,    _VALID_LOSSES,      "base_loss")
         _validate_choice(self.save_best_by, _VALID_SAVE_BY,     "save_best_by")
         _validate_choice(self.fusion,       _VALID_FUSIONS,     "fusion")
+        _validate_choice(
+            self.eval_threshold_mode, _VALID_EVAL_THRESHOLD_MODES, "eval_threshold_mode"
+        )
 
         _validate_positive(self.audio_len,  "audio_len")
         _validate_positive(self.num_epochs, "num_epochs")
@@ -231,6 +240,7 @@ class ATADDConfig:
         _validate_range(self.patience,      0,    10000, "patience")
         _validate_range(self.eval_steps,      0, 10**7, "eval_steps")
         _validate_range(self.full_eval_steps, 0, 10**7, "full_eval_steps")
+        _validate_range(self.score_threshold, 0.0, 1.0, "score_threshold")
 
     # ── I/O ──────────────────────────────────────────────────────────────────
 

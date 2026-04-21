@@ -157,7 +157,7 @@ def train(args):
     def _run_inference(loader):
         """Run the model over *loader* and return aggregated eval metrics."""
         model.eval()
-        loss_list, score_list, label_list, pred_list, type_list = [], [], [], [], []
+        loss_list, score_list, label_list, type_list = [], [], [], []
         with torch.no_grad():
             for feat, _, labels, class_types, _ in tqdm(loader, leave=False, desc="eval"):
                 feat   = feat.to(args.device, non_blocking=True)
@@ -170,34 +170,40 @@ def train(args):
                 else:
                     loss  = criterion(outputs, labels)
                     score = F.softmax(outputs, dim=1)[:, 0]
-                pred = torch.where(
-                    score >= 0.5, torch.zeros_like(labels), torch.ones_like(labels)
-                )
                 loss_list.append(loss.item())
                 score_list.append(score)
                 label_list.append(labels)
-                pred_list.append(pred)
                 type_list.append(class_types)
 
         val_loss  = float(np.nanmean(loss_list))
         scores    = torch.cat(score_list).cpu().numpy()
         labels_np = torch.cat(label_list).cpu().numpy()
-        preds     = torch.cat(pred_list).cpu().numpy()
         types     = torch.cat(type_list).cpu().numpy()
 
-        val_eer = em.compute_eer(scores[labels_np == 0], scores[labels_np == 1])[0]
-        val_f1  = f1_score(labels_np, preds, average="macro")
+        real_sc = scores[labels_np == 0]
+        fake_sc = scores[labels_np == 1]
+        val_eer, eer_thr = em.compute_eer(real_sc, fake_sc)
+
+        if args.eval_threshold_mode == "eer":
+            thr = eer_thr
+        else:
+            thr = float(args.score_threshold)
+
+        # Higher score => real (label 0); fake (label 1) when score < threshold
+        preds = (scores < thr).astype(np.int64)
+        val_f1 = f1_score(labels_np, preds, average="macro")
 
         type_metrics = {}
         for t in np.unique(types):
             mask = types == t
-            tl, ts, tp = labels_np[mask], scores[mask], preds[mask]
+            tl, ts = labels_np[mask], scores[mask]
+            tp = (ts < thr).astype(np.int64)
             type_metrics[t] = {
                 "eer": (np.nan if len(np.unique(tl)) < 2
                         else em.compute_eer(ts[tl == 0], ts[tl == 1])[0]),
                 "f1":  f1_score(tl, tp, average="macro"),
             }
-        return val_loss, val_eer, val_f1, type_metrics
+        return val_loss, val_eer, val_f1, type_metrics, float(thr)
 
     def _log_metrics(log_filename, tag, global_step, val_loss, val_eer, val_f1, type_metrics):
         with open(os.path.join(args.log_dir, log_filename), "a") as f:
@@ -247,20 +253,21 @@ def train(args):
 
         tag = f"{epoch}.{global_step}"
         t0  = time.time()
-        val_loss, val_eer, val_f1, type_metrics = _run_inference(val_loader)
+        val_loss, val_eer, val_f1, type_metrics, decision_thr = _run_inference(val_loader)
 
         _log_metrics("dev_loss.log", tag, global_step, val_loss, val_eer, val_f1, type_metrics)
 
         if use_wandb:
             wb = {"sample_eval/loss": val_loss, "sample_eval/eer": val_eer,
-                  "sample_eval/f1": val_f1}
+                  "sample_eval/f1": val_f1, "sample_eval/decision_threshold": decision_thr}
             for t, m in type_metrics.items():
                 wb[f"sample_eval/{t}/eer"] = m["eer"]
                 wb[f"sample_eval/{t}/f1"]  = m["f1"]
             wandb.log(wb, step=global_step)
 
         print(f"\n[SampleEval @ {tag}]  loss={val_loss:.4f}  EER={val_eer:.4f}"
-              f"  F1={val_f1:.4f}  ({(time.time()-t0)/60:.1f} min)")
+              f"  F1={val_f1:.4f}  thr={decision_thr:.4f} ({args.eval_threshold_mode})"
+              f"  ({(time.time()-t0)/60:.1f} min)")
         for t, m in type_metrics.items():
             print(f"  [{t}]  EER={m['eer']:.4f}  F1={m['f1']:.4f}")
 
@@ -309,21 +316,22 @@ def train(args):
 
         tag = f"{epoch}.{global_step}"
         t0  = time.time()
-        val_loss, val_eer, val_f1, type_metrics = _run_inference(full_val_loader)
+        val_loss, val_eer, val_f1, type_metrics, decision_thr = _run_inference(full_val_loader)
 
         _log_metrics("all_dev_loss.log", tag, global_step,
                      val_loss, val_eer, val_f1, type_metrics)
 
         if use_wandb:
             wb = {"full_eval/loss": val_loss, "full_eval/eer": val_eer,
-                  "full_eval/f1": val_f1}
+                  "full_eval/f1": val_f1, "full_eval/decision_threshold": decision_thr}
             for t, m in type_metrics.items():
                 wb[f"full_eval/{t}/eer"] = m["eer"]
                 wb[f"full_eval/{t}/f1"]  = m["f1"]
             wandb.log(wb, step=global_step)
 
         print(f"\n[FullEval  @ {tag}]  loss={val_loss:.4f}  EER={val_eer:.4f}"
-              f"  F1={val_f1:.4f}  ({(time.time()-t0)/60:.1f} min)")
+              f"  F1={val_f1:.4f}  thr={decision_thr:.4f} ({args.eval_threshold_mode})"
+              f"  ({(time.time()-t0)/60:.1f} min)")
         for t, m in type_metrics.items():
             print(f"  [{t}]  EER={m['eer']:.4f}  F1={m['f1']:.4f}")
 

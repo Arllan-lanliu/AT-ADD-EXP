@@ -2,9 +2,9 @@
 data:
   # Track 2
   atadd_t2_train_audio: your_path/at_add_track2/train
-  atadd_t2_train_label: your_path/at_add_track2/labels/train.csv
+  atadd_t2_train_label: your_path/at_add_track2/label/train.csv
   atadd_t2_dev_audio:   your_path/at_add_track2/dev
-  atadd_t2_dev_label:   your_path/at_add_track2/labels/dev.csv
+  atadd_t2_dev_label:   your_path/at_add_track2/label/dev.csv
   atadd_t2_eval_audio:  your_path/at_add_track2/eval
 
 # ── SSL model paths ───────────────────────────────────────────────────────────
