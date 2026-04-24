@@ -1,21 +1,20 @@
 # ── Data paths ────────────────────────────────────────────────────────────────
 data:
   # Track 2
-  atadd_t2_train_audio: /data7/tyx/dataset/at_add_track2/train
-  atadd_t2_train_label: /data7/tyx/dataset/at_add_track2/label/train.csv
-  atadd_t2_dev_audio:   /data7/tyx/dataset/at_add_track2/dev
-  atadd_t2_dev_label:   /data7/tyx/dataset/at_add_track2/label/dev.csv
-  atadd_t2_eval_audio:  /data7/tyx/dataset/at_add_track2/eval
+  atadd_t2_train_audio: /data/liulan/workspace/dataset/at_add_track2/train
+  atadd_t2_train_label: /data/liulan/workspace/dataset/at_add_track2/labels/train.csv
+  atadd_t2_dev_audio:   /data/liulan/workspace/dataset/at_add_track2/dev
+  atadd_t2_dev_label:   /data/liulan/workspace/dataset/at_add_track2/labels/dev.csv
+  atadd_t2_eval_audio:  /data/liulan/workspace/dataset/at_add_track2/eval
 
 
 # ── SSL model paths ───────────────────────────────────────────────────────────
 ssl:
-  xlsr:  /data7/tyx/huggingface/wav2vec2-xls-r-300m
-  wavlm: /data7/tyx/huggingface/wavlm-large
-  mert:  /data7/tyx/huggingface/MERT-v1-330M
-  beats: /data7/tyx/huggingface/BEATs_iter3
-  clap:  /data7/tyx/huggingface/larger_clap_music_and_speech
-
+  xlsr:  /data/liulan/workspace/huggingface/wav2vec2-xls-r-300m
+  wavlm:/data/liulan/workspace/huggingface/wavlm-large
+  mert:  /data/liulan/workspace/huggingface/MERT-v1-330M
+  beats: /data/liulan/workspace/huggingface/BEATs_iter3
+  clap:  /data/liulan/workspace/huggingface/larger_clap_music_and_speech
 
 # ── Task & output ─────────────────────────────────────────────────────────────
 filter_types: speech   # Omit or empty = use all types.

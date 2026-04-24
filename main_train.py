@@ -29,10 +29,10 @@ torch.multiprocessing.set_start_method("spawn", force=True)
 
 # Dual-SSL model keys where AMP gives a meaningful speedup
 _AMP_MODELS = {
-    "ft-xlsrwavlmaasist",
-    #"ft-xlsrbeatsaasist",
-    "ft-xlsrmertaasist",
-    "ft-xlsrclapaasist",
+    # "ft-xlsrwavlmaasist",
+    # "ft-xlsrbeatsaasist",
+    # "ft-xlsrmertaasist",
+    # "ft-xlsrclapaasist",
 }
 
 

@@ -1,5 +1,6 @@
 ckpt_t2/
 ckpt_t2_prev/
+ckpt_t2_main/
 __pycache__/
 conf/experiments/
 clear_checkpoint.sh
