@@ -85,7 +85,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Analyze dev attention and features for a trained model."
     )
-    parser.add_argument("--model_path", type=str, default="./ckpt_t2/ft-w2v2aasist")
+    parser.add_argument("--model_path", type=str, default="./ckpt_t2/ft-w2v2assist_baseline")
     parser.add_argument("--gpu", type=str, default="2")
     parser.add_argument("--batch_size", type=int, default=20)
     parser.add_argument("--eval_task", type=str, default="atadd-track2", choices=["atadd-track1", "atadd-track2"])
@@ -281,7 +281,7 @@ def main():
 
     # Enable XLSR attentions if available.
     visual = False
-    if args.model == "ft-w2v2aasist":
+    if args.model in ("ft-w2v2aasist", "ft-w2v2assist_baseline"):
         feat_model.visual = True
         if hasattr(feat_model, "wav2vec2") and hasattr(feat_model.wav2vec2, "visual"):
             feat_model.wav2vec2.visual = True

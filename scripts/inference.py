@@ -137,11 +137,11 @@ def _init_args(argv=None):
         key = ("atadd_t1_eval_audio" if args.eval_task == "atadd-track1"
                else "atadd_t2_eval_audio")
         args.eval_audio = train_dict.get(key)
+    result_dir = os.path.join(args.model_path, 'result')
+    os.makedirs(result_dir, exist_ok=True)
     if args.score_file is None:
-        result_dir = os.path.join(args.model_path, 'result')
-        os.makedirs(result_dir, exist_ok=True)
         args.score_file = os.path.join(result_dir, f'{args.eval_task}_logits_eval.csv')
-        args.binary_score_file = os.path.join(result_dir, f'{args.eval_task}_binary_eval.csv')
+    args.binary_score_file = os.path.join(result_dir, f'{args.eval_task}_binary_eval.csv')
 
     if args.eval_threshold_mode is None:
         args.eval_threshold_mode = train_dict.get("eval_threshold_mode", "fixed")

@@ -20,6 +20,126 @@ try:
 except ImportError:
     _WPT_AVAILABLE = False
 
+# default
+class XLSRAASIST(nn.Module):
+    def __init__(self, model_dir, device='cuda', freeze = True, visual=False):
+        super(XLSRAASIST, self).__init__()
+
+        # Initialize XLSRWithPrompt (features extractor)
+        self.wav2vec2 = XLSR(
+            model_dir=model_dir,
+            device=device,
+            freeze=freeze,
+            visual=visual
+        )
+
+        # Initialize W2VAASIST (main model)
+        self.w2vaasist = AASIST()
+        self.visual = visual
+    def forward(self, audio_data, output_attentions=False):
+        if output_attentions:
+            features, attn = self.wav2vec2.forward(audio_data, output_attentions=True)
+            last_hidden, output = self.w2vaasist(features)
+            return last_hidden, output, attn
+        if self.visual:
+            features, attention_weights = self.wav2vec2.extract_features(audio_data)
+            last_hidden, output = self.w2vaasist(features)
+            return last_hidden, output, attention_weights
+        # Extract features using XLSRWithPrompt
+        features = self.wav2vec2.extract_features(audio_data)
+
+        # Pass the features through W2VAASIST
+        last_hidden, output = self.w2vaasist(features)
+        return last_hidden, output
+
+    def train(self, mode=True):
+        # Set train status for both components
+        if mode:
+            self.w2vaasist.train(mode)
+        else:
+            self.w2vaasist.eval()
+
+    def eval(self):
+        # Set eval status for both components
+        self.w2vaasist.eval()
+        self.wav2vec2.eval()   # important
+
+
+
+class XLSRMERTAASIST(nn.Module):
+    """
+    Dual-SSL fusion:
+    audio -> XLSR + MERT -> fuse features -> AASIST classifier
+    (XLSR-300M and MERT-v1-330M are both 1024-d frame features.)
+
+    Supported fusion methods (--fusion):
+      cat_linear  : concatenate then Linear projection (default)
+      gated       : soft gate interpolation between the two projections
+      cross_attn  : bidirectional cross-attention with residual + LayerNorm
+      film        : Feature-wise Linear Modulation (MERT modulates XLSR)
+      type_aware  : dynamic per-type weights with auxiliary type-classification
+                    loss (access side-channel via model._last_type_logits)
+    """
+    def __init__(self, xlsr_model_dir, mert_model_dir, device='cuda',
+                 freeze=True, visual=False, fusion='cat_linear'):
+        super(XLSRMERTAASIST, self).__init__()
+
+        self.xlsr = XLSR(
+            model_dir=xlsr_model_dir,
+            device=device,
+            freeze=freeze,
+            visual=visual,
+        )
+        self.mert = MERT(
+            model_dir=mert_model_dir,
+            device=device,
+            freeze=freeze,
+        )
+        # XLSR-300M and MERT-v1-330M are both 1024-d; fuse to 1024 for SSLAASIST.
+        self.fusion_module = build_fusion_module(fusion, 1024, 1024, 1024)
+        self.w2vaasist = AASIST(in_dim=1024)
+        self.visual = visual
+        # Side-channel: set by _fuse_features when fusion == 'type_aware'.
+        self._last_type_logits = None
+
+    def _fuse_features(self, xlsr_feat, mert_feat):
+        # Be robust to small sequence-length mismatches.
+        t = min(xlsr_feat.size(1), mert_feat.size(1))
+        xlsr_feat = xlsr_feat[:, :t, :]
+        mert_feat = mert_feat[:, :t, :]
+        result = self.fusion_module(xlsr_feat, mert_feat)
+        if isinstance(result, tuple):
+            fused, self._last_type_logits = result
+        else:
+            fused = result
+            self._last_type_logits = None
+        return fused  # (B, T, 1024)
+
+    def forward(self, audio_data):
+        if self.visual:
+            xlsr_feat, attention_weights = self.xlsr.extract_features(audio_data)
+        else:
+            xlsr_feat = self.xlsr.extract_features(audio_data)
+
+        mert_feat = self.mert.extract_features(audio_data)
+        fused_feat = self._fuse_features(xlsr_feat, mert_feat)
+        last_hidden, output = self.w2vaasist(fused_feat)
+
+        if self.visual:
+            return last_hidden, output, attention_weights
+        return last_hidden, output
+
+    def train(self, mode=True):
+        super().train(mode)
+        if mode:
+            if self.xlsr.freeze:
+                self.xlsr.eval()
+            if self.mert.freeze:
+                self.mert.eval()
+        return self
+
+    def eval(self):
+        return super().eval()
 
 
 # =============================================================================
@@ -300,6 +420,16 @@ def _build_ft_w2v2aasist(args):
     )
 
 
+@register_model('ft-w2v2assist_baseline')
+def _build_ft_w2v2assist_baseline(args):
+    # Alias for the baseline XLSR + AASIST fine-tuning setup.
+    return XLSRAASIST(
+        model_dir=args.xlsr,
+        device=_dev(args),
+        freeze=False,
+    )
+
+
 @register_model('ft-wavlmaasist')
 def _build_ft_wavlmaasist(args):
     return SingleSSLModel(
@@ -360,11 +490,19 @@ def _build_ft_xlsrbeatsaasist(args):
 
 @register_model('ft-xlsrmertaasist')
 def _build_ft_xlsrmertaasist(args):
-    return DualSSLModel(
-        frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
-        frontend_b=MERT(model_dir=args.mert, device=_dev(args), freeze=False),
-        fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
-        backend=AASIST(in_dim=1024),
+    # return DualSSLModel(
+    #     frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+    #     frontend_b=MERT(model_dir=args.mert, device=_dev(args), freeze=False),
+    #     fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
+    #     backend=AASIST(in_dim=1024),
+    # )
+    return XLSRMERTAASIST(
+        xlsr_model_dir=args.xlsr,
+        mert_model_dir=args.mert,
+        device=_dev(args),
+        freeze=False,
+        visual=False,
+        fusion=_fusion(args),
     )
 
 
