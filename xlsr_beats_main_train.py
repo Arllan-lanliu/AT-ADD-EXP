@@ -7,6 +7,7 @@ from collections import defaultdict
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 from sklearn.metrics import f1_score
@@ -15,6 +16,7 @@ from tqdm import tqdm, trange
 
 from utils import config, metrics as em
 from utils.optimizer import disable_running_stats, enable_running_stats
+from model.model import build_model
 from utils.trainer import (
     adjust_learning_rate,
     args_for_wandb,
@@ -55,7 +57,7 @@ def _aggregate_type_head_accuracy(
 
 # Dual-SSL / heavy multi-encoder models where AMP gives a meaningful speedup
 _AMP_MODELS = {
-    "ft-routed-ssl-aasist",
+    # "ft-routed-ssl-aasist",
     # "ft-xlsrwavlmaasist",
     # "ft-xlsrbeatsaasist",
     # "ft-xlsrmertaasist",
@@ -70,6 +72,7 @@ _AMP_MODELS = {
 def initParams():
     """Parse config, prepare output directories, set device and seed."""
     args = config.initParams()
+    
     cfg  = getattr(args, "_config", None)   # ATADDConfig object for YAML saving
 
     args.filter_types_parsed = parse_filter_types(args.filter_types)
@@ -110,6 +113,95 @@ def initParams():
     return args
 
 
+def build_model_and_optimizer_xlsrbeats(args):
+    """Construct the model, optimiser, and loss criterion.
+
+    Also loads a checkpoint if ``args.continue_training`` is set.
+
+    Returns
+    -------
+    model : nn.Module
+    optimizer : torch.optim.Optimizer (or SAM wrapper)
+    criterion : nn.Module
+    resume_info : dict with keys ``start_epoch``, ``best_sample_val``, ``best_full_val``, ``no_improve``
+    """
+    model = build_model(args).to(args.device)
+    xlsr_params  = []
+    beats_params = []
+    other_params = []
+    
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if "xlsr" in name or "wav2vec2" in name:  # 根据你的模型命名调整
+            xlsr_params.append(param)
+        elif "beats" in name:
+            beats_params.append(param)
+        else:
+            other_params.append(param)
+    
+    # ── 差异化学习率 / weight_decay ──
+    param_groups = [
+        {"params": xlsr_params,  "lr": args.xlsr_lr,  "weight_decay": args.xlsr_weight_decay},
+        {"params": beats_params, "lr": args.beats_lr, "weight_decay": args.beats_weight_decay},
+        {"params": other_params, "lr": args.lr,       "weight_decay": args.other_weight_decay},
+    ]
+    print(
+        "Param-group LR/WD -> "
+        f"xlsr:{args.xlsr_lr}/{args.xlsr_weight_decay}, "
+        f"beats:{args.beats_lr}/{args.beats_weight_decay}, "
+        f"other:{args.lr}/{args.other_weight_decay}"
+    )
+    
+    optimizer = torch.optim.Adam(
+        param_groups,
+        betas=(args.beta_1, args.beta_2),
+        eps=args.eps,
+    )
+
+    # Sentinel values: for lower-is-better metrics (loss/eer) use +inf;
+    # for higher-is-better (f1) use -inf.
+    _worse_sentinel = -float("inf") if args.save_best_by == "f1" else float("inf")
+    resume_info = dict(
+        start_epoch=0,
+        global_step=0,
+        best_sample_val=_worse_sentinel,
+        best_full_val=_worse_sentinel,
+        no_improve=0,
+    )
+
+    if args.continue_training:
+        ckpt_path = os.path.join(args.out_fold, "checkpoint", "latest.pt")
+        if os.path.exists(ckpt_path):
+            print(f"Loading checkpoint from {ckpt_path}")
+            ckpt = torch.load(ckpt_path, map_location=args.device, weights_only=False)
+            model.load_state_dict(ckpt["model_state_dict"])
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            resume_info.update(
+                start_epoch=ckpt["epoch"] + 1,
+                global_step=ckpt.get("global_step", 0),
+                best_sample_val=ckpt.get("best_sample_val", _worse_sentinel),
+                best_full_val=ckpt.get("best_full_val",   _worse_sentinel),
+                no_improve=ckpt.get("no_improve", 0),
+            )
+            print(f"Resumed from epoch {resume_info['start_epoch']}")
+        else:
+            print("Checkpoint not found, training from scratch.")
+
+    # Class-weighted loss to handle imbalanced real/fake ratio
+    class_weight = torch.FloatTensor(
+        [4.0, 1.0] if args.train_task == "atadd-track1" else [3.5, 1.0]
+    ).to(args.device)
+    print(f"Class weight: {class_weight.tolist()}  |  save_best_by: {args.save_best_by}")
+
+    if args.base_loss == "ce":
+        criterion = nn.CrossEntropyLoss(weight=class_weight)
+    else:
+        criterion = nn.BCEWithLogitsLoss()
+
+    return model, optimizer, criterion, resume_info
+
+
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
@@ -117,7 +209,7 @@ def initParams():
 def train(args):
     torch.set_default_tensor_type(torch.FloatTensor)
 
-    model, optimizer, criterion, resume = build_model_and_optimizer(args)
+    model, optimizer, criterion, resume = build_model_and_optimizer_xlsrbeats(args)
     train_loader, val_loader  = build_dataloaders(args)
     full_val_loader           = build_full_dev_loader(args)
 

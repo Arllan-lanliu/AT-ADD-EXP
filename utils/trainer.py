@@ -102,7 +102,7 @@ def build_model_and_optimizer(args):
         ckpt_path = os.path.join(args.out_fold, "checkpoint", "latest.pt")
         if os.path.exists(ckpt_path):
             print(f"Loading checkpoint from {ckpt_path}")
-            ckpt = torch.load(ckpt_path, map_location=args.device)
+            ckpt = torch.load(ckpt_path, map_location=args.device, weights_only=False)
             model.load_state_dict(ckpt["model_state_dict"])
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
             resume_info.update(

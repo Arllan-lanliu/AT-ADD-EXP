@@ -429,9 +429,9 @@ class AASIST(nn.Module):
 
         self.out_layer = nn.Linear(5 * gat_dims[1], 2)
 
-    def forward(self, x):
+    def forward(self, x): # (bs, feat_dim, frame_number)
 
-        x = x.squeeze(dim=1)
+        x = x.squeeze(dim=1) # (bs, feat_dim, frame_number)
 
         x = self.LL(x)
         x = x.transpose(1, 2)  # (bs,feat_out_dim,frame_number)

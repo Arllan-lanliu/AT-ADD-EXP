@@ -469,3 +469,7 @@ if _WPT_AVAILABLE:
             ),
             backend=AASIST(in_dim=1024),
         )
+
+
+# Registrations in ``model/vote_model.py`` (ft-vote-routed-aasist, …).
+import model.vote_model  # noqa: F401, E402
