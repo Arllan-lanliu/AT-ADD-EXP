@@ -166,7 +166,7 @@ class ATADDConfig:
     out_fold:   str = "./ckpt_t2/try"
 
     # ── Model ────────────────────────────────────────────────────────────────
-    model:     str   = "ft-xlsrmertaasist"
+    model:     str   = "ft-xlsrbeatsaasist"
     fusion:    str   = "cat_linear"
     audio_len: int   = 64600   # 4 s at 16 kHz
     filter_types:     Optional[str] = None
@@ -175,16 +175,28 @@ class ATADDConfig:
     type_loss_weight: float = 0.1
     """Weight of the auxiliary type-classification loss (fusion=type_aware only)."""
 
+    ce_type_sample_weights: Optional[str] = None
+    """Optional per-content-type multipliers for the *main* real/fake CE (``main_train_type_loss``).
+
+    ``None`` / omitted: use standard ``CrossEntropyLoss(weight=class_weight)``.
+
+    Otherwise a comma-separated map ``type_id:weight`` matching ``data/dataset.py``
+    class ids: 0=speech, 1=sound, 2=singing, 3=music. Example: ``"0:1,1:1,2:2,3:0.5"``.
+
+    Final per-sample weight is ``class_weight[label] * type_weight[type_id]``.
+    Distinct from ``type_loss_weight``, which scales the auxiliary type head only.
+    """
+
     # ── Training hyperparameters ─────────────────────────────────────────────
     num_epochs:        int   = 20
     batch_size:        int   = 24
     lr:                float = 0.000001
     lr_decay:          float = 0.5    # LR multiplied by lr_decay every `interval` epochs
-    interval:          int   = 4      # epoch interval for LR decay
+    interval:          int   = 2      # epoch interval for LR decay
     beta_1:            float = 0.9
     beta_2:            float = 0.999
     eps:               float = 1e-8
-    num_workers:       int   = 8
+    num_workers:       int   = 4
     base_loss:         str   = "ce"
     save_best_by:      str   = "f1"
     """Metric used to rank checkpoints: ``loss`` (lower is better), ``eer`` (lower), ``f1`` (higher)."""
