@@ -1,5 +1,5 @@
 ckpt_t2*/
 __pycache__/
-conf/experiments/
+conf/*/
 clear_checkpoint.sh
 *_run.sh
