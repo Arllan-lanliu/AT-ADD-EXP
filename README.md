@@ -1,6 +1,6 @@
 <h1 align="center">ThreeTO</h1>
 
-This repository provides the EXP of conventional and self-supervised learning (SSL)-based countermeasures for the **AT-ADD: All-Type Audio Deepfake Detection Challenge**.  
+This repository provides the EXP of conventional and self-supervised learning (SSL)-based countermeasures.  
 
 ---
 
