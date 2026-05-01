@@ -1,4 +1,4 @@
-<h1 align="center">AT-ADD Challenge: ThreeTO</h1>
+<h1 align="center">ThreeTO</h1>
 
 This repository provides the EXP of conventional and self-supervised learning (SSL)-based countermeasures for the **AT-ADD: All-Type Audio Deepfake Detection Challenge**.  
 
@@ -6,10 +6,7 @@ This repository provides the EXP of conventional and self-supervised learning (S
 
 ## 1. Data Preparation
 
-**Dataset url** : https://huggingface.co/datasets/xieyuankun/AT-ADD-Track2
-
-
-Please download the AT-ADD dataset and organize it as follows:
+Please download the dataset and organize it as follows:
 
 ```
 ├── T2/
@@ -49,8 +46,8 @@ Please download the AT-ADD dataset and organize it as follows:
 ---
 ## 4. Training and Evaluation
 ```
->> git clone git@github.com:Arllan-lanliu/AT-ADD-EXP.git
->> cd ./AT-ADD-EXP
+>> git clone git@github.com:Arllan-lanliu/ThreeTO.git
+>> cd ./ThreeTO
 >> conda activate atadd3.10
 >> chmod +x ./run.sh
 >> ./run.sh
