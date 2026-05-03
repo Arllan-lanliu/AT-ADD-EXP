@@ -262,6 +262,43 @@ def train(args):
     n_batches     = len(train_loader)
     stop_training = False
 
+    accum_steps = max(
+        1, int(getattr(args, "gradient_accumulation_steps", 1))
+    )
+    use_sharpness_opt = bool(args.SAM or args.ASAM or args.CSAM)
+    if use_sharpness_opt and accum_steps > 1:
+        print(
+            "[warn] gradient_accumulation_steps>1 with SAM/ASAM/CSAM is unsupported; "
+            "using gradient_accumulation_steps=1."
+        )
+        accum_steps = 1
+    if accum_steps > 1:
+        print(
+            f"[train] gradient_accumulation_steps={accum_steps} "
+            f"(approx. effective batch = batch_size×{accum_steps})"
+        )
+
+    def _accum_finish_step(num_micro_batches: int) -> None:
+        """Apply optimizer step after ``num_micro_batches`` scaled backward passes.
+
+        Loss for each micro-batch was divided by ``accum_steps``. If fewer than
+        ``accum_steps`` micro-batches are grouped (partial tail or eval barrier),
+        gradients are scaled by ``accum_steps / num_micro_batches`` so the step
+        matches the intended effective learning rate for a full cycle.
+        """
+        if num_micro_batches <= 0:
+            return
+        if amp_enabled:
+            scaler.unscale_(optimizer)
+        if num_micro_batches < accum_steps:
+            inv = accum_steps / float(num_micro_batches)
+            for p in model.parameters():
+                if p.grad is not None:
+                    p.grad.mul_(inv)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
+
     # ── Shared inference helper ───────────────────────────────────────────────
 
     def _run_inference(loader):
@@ -473,6 +510,10 @@ def train(args):
         adjust_learning_rate(args, args.lr, optimizer, epoch)
         current_lr = optimizer.param_groups[0]["lr"]
 
+        if accum_steps > 1:
+            optimizer.zero_grad(set_to_none=True)
+            accum_counter = 0
+
         for i, (feat, _, labels, class_types, _) in enumerate(
             tqdm(train_loader, leave=False, desc=f"epoch {epoch}")
         ):
@@ -507,6 +548,12 @@ def train(args):
                     scaler.unscale_(optimizer)
                 optimizer.second_step(zero_grad=True)
                 scaler.update()
+            elif accum_steps > 1:
+                with autocast(enabled=amp_enabled):
+                    _, out = model(feat)
+                    loss = _loss_with_type(compute_main_loss(out, labels, class_types))
+                scaler.scale(loss / accum_steps).backward()
+                accum_counter += 1
             else:
                 optimizer.zero_grad()
                 with autocast(enabled=amp_enabled):
@@ -518,7 +565,28 @@ def train(args):
 
             train_losses.append(loss.item())
             global_step = epoch * n_batches + i
-            gs = global_step + 1   # 1-indexed
+            gs = global_step + 1   # 1-indexed micro-batch index
+
+            if accum_steps > 1:
+                hit_sample_eval = (
+                    args.eval_steps > 0
+                    and gs % args.eval_steps == 0
+                    and gs >= args.eval_warmup_steps
+                )
+                hit_full_eval = (
+                    args.full_eval_steps > 0
+                    and gs % args.full_eval_steps == 0
+                    and gs >= args.eval_warmup_steps
+                )
+                if accum_counter > 0 and (hit_sample_eval or hit_full_eval):
+                    _accum_finish_step(accum_counter)
+                    accum_counter = 0
+                elif accum_counter >= accum_steps:
+                    _accum_finish_step(accum_steps)
+                    accum_counter = 0
+                elif i == n_batches - 1 and accum_counter > 0:
+                    _accum_finish_step(accum_counter)
+                    accum_counter = 0
 
             with open(os.path.join(args.log_dir, "train_loss.log"), "a") as f:
                 f.write(f"{gs}\t{epoch}\t{i}\t{train_losses[-1]:.6f}\n")
@@ -545,6 +613,10 @@ def train(args):
                 else:
                     do_full_eval(epoch, gs)
                 model.train()
+
+        if accum_steps > 1 and accum_counter > 0:
+            _accum_finish_step(accum_counter)
+            accum_counter = 0
 
         print(f"Epoch {epoch}  loss={np.mean(train_losses):.4f}"
               f"  time={(time.time()-t0)/60:.1f} min")

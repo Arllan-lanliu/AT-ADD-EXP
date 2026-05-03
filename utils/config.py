@@ -197,6 +197,13 @@ class ATADDConfig:
     beta_2:            float = 0.999
     eps:               float = 1e-8
     num_workers:       int   = 4
+    gradient_accumulation_steps: int = 1
+    """Number of micro-batches per optimizer step (``main_train_type_loss.py``).
+
+    ``1`` disables accumulation. Larger values emulate a larger effective batch
+    before each ``optimizer.step()``. Ignored (>1 forced to ``1``) when SAM /
+    ASAM / CSAM is enabled — those paths are incompatible with naive accumulation.
+    """
     base_loss:         str   = "ce"
     save_best_by:      str   = "f1"
     """Metric used to rank checkpoints: ``loss`` (lower is better), ``eer`` (lower), ``f1`` (higher)."""
@@ -244,6 +251,9 @@ class ATADDConfig:
         _validate_positive(self.num_epochs, "num_epochs")
         _validate_positive(self.batch_size, "batch_size")
         _validate_positive(self.num_workers, "num_workers")
+        _validate_positive(
+            self.gradient_accumulation_steps, "gradient_accumulation_steps"
+        )
         _validate_range(self.lr,            1e-9, 1.0,  "lr")
         _validate_range(self.lr_decay,      0.0,  1.0,  "lr_decay")
         _validate_range(self.beta_1,        0.0,  1.0,  "beta_1")
