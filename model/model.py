@@ -142,6 +142,7 @@ class XLSRMERTAASIST(nn.Module):
         return super().eval()
 
 
+
 # =============================================================================
 # Generic frontend-backend wrappers
 # =============================================================================
@@ -210,12 +211,15 @@ class SingleSSLModel(nn.Module):
             return hidden, out, attn
         return hidden, out
 
-    def train(self, mode: bool = True):
-        super().train(mode)
-        # Keep frozen frontends in eval mode during training
-        if mode and hasattr(self.frontend, 'freeze') and self.frontend.freeze:
-            self.frontend.eval()
-        return self
+    def train(self, mode=True): # Set train status for both components
+        if mode:
+            self.backend.train(mode)
+        else:
+            self.backend.eval()
+            
+    def eval(self): # Set eval status for both components
+        self.backend.eval()
+        self.frontend.eval()   # important
 
 
 class DualSSLModel(nn.Module):

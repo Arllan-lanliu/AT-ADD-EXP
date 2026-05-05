@@ -8,7 +8,7 @@ import random
 import csv
 
 from data.RawBoost import process_Rawboost_feature
-from data.Augmentor import AudioAugmentor, PitchShiftAugment, SpecAugmentForAudio
+from data.Augmentor import AudioAugmentor, PitchShiftAugment, SpecAugmentForAudio, NoiseAugment
 from data.Sampler import _DEV_SUBSAMPLE_BUDGET, _stratified_sample
 
 def torchaudio_load(filepath):
@@ -95,6 +95,7 @@ class atadd_dataset(Dataset):
         self.aug_probs = None
         self._pitch_shift_aug = None
         self._spec_aug = None
+        self._noise_aug = None
         if aug_probs is not None:
             active = {k: float(v) for k, v in aug_probs.items() if float(v) > 0.0}
             if active:
@@ -111,6 +112,8 @@ class atadd_dataset(Dataset):
                         )
                     elif music_aug_method == "spec_augment":
                         self._spec_aug = SpecAugmentForAudio(sr=16000)
+                if "speech" in active:
+                    self._noise_aug = NoiseAugment()
 
         self.all_files = []
         with open(self.path_to_protocol, 'r', encoding='utf-8-sig') as f:
@@ -157,7 +160,13 @@ class atadd_dataset(Dataset):
                 else:
                     wav_np = np.squeeze(waveform)
 
-                if class_type == "music":
+                if class_type == "speech":
+                    augmented = self._noise_aug.apply(wav_np)
+                    if isinstance(augmented, torch.Tensor):
+                        waveform = augmented
+                    else:
+                        waveform = torch.tensor(augmented, dtype=torch.float32)
+                elif class_type == "music":
                     if self._pitch_shift_aug is not None:
                         augmented = self._pitch_shift_aug.apply(wav_np)
                     elif self._spec_aug is not None:

@@ -257,3 +257,18 @@ class AudioAugmentor:
         noise = numpy.sum(numpy.concatenate(noises, axis=0), axis=0, keepdims=True)
         return noise + audio
 
+
+class NoiseAugment:
+    """白噪声 + 环境噪声"""
+    def __init__(self, snr_range=(10, 30)):
+        self.snr_range = snr_range
+
+    def apply(self, waveform):
+        snr_db = random.uniform(*self.snr_range)
+        noise = np.random.randn(len(waveform))
+        
+        signal_power = np.mean(waveform ** 2)
+        noise_power = signal_power / (10 ** (snr_db / 10))
+        noise = noise * np.sqrt(noise_power / np.mean(noise ** 2))
+        
+        return waveform + noise
