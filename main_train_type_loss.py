@@ -613,7 +613,8 @@ def train(args):
                 else:
                     do_full_eval(epoch, gs)
                 model.train()
-
+            
+    # Accumulate gradients and update parameters
         if accum_steps > 1 and accum_counter > 0:
             _accum_finish_step(accum_counter)
             accum_counter = 0
