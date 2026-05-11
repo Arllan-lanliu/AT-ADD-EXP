@@ -42,6 +42,9 @@ def setup_seed(random_seed: int, cudnn_deterministic: bool = True) -> None:
     np.random.seed(random_seed)
     os.environ['PYTHONHASHSEED'] = str(random_seed)
 
+    # Must seed both CPU and CUDA generators; CPU covers model init, dropout,
+    # SubsetRandomSampler, etc.
+    torch.manual_seed(random_seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(random_seed)
         torch.backends.cudnn.deterministic = cudnn_deterministic

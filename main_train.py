@@ -8,7 +8,6 @@ from collections import defaultdict
 import numpy as np
 import torch
 import torch.nn.functional as F
-import wandb
 from sklearn.metrics import f1_score
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm, trange
@@ -23,6 +22,8 @@ from utils.trainer import (
     build_model_and_optimizer,
 )
 from utils.helpers import parse_filter_types, setup_seed
+
+import wandb
 
 torch.set_default_tensor_type(torch.FloatTensor)
 torch.multiprocessing.set_start_method("spawn", force=True)

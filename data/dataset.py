@@ -8,7 +8,14 @@ import random
 import csv
 
 from data.RawBoost import process_Rawboost_feature
-from data.Augmentor import AudioAugmentor, PitchShiftAugment, SpecAugmentForAudio, NoiseAugment
+from data.Augmentor import (
+    AudioAugmentor,
+    PitchShiftAugment,
+    SpecAugmentForAudio,
+    MusanSpeechAdditiveAugment,
+    NoiseAugment,
+    SpeechCodecRoundtripAugment,
+)
 from data.Sampler import _DEV_SUBSAMPLE_BUDGET, _stratified_sample
 
 def torchaudio_load(filepath):
@@ -41,19 +48,27 @@ class atadd_dataset(Dataset):
                  filter_types=None,
                  aug_probs=None,
                  music_aug_method="spec_augment",
+                 speech_aug_method="none",
+                 speech_rawboost_algo=5,
+                 musan_path="",
+                 rir_path="",
                  dev_subsample=False,
                  dev_subsample_seed=42):
         """
         Args:
-            aug_probs: dict mapping audio type → augmentation probability, e.g.
-                       {"speech": 0.0, "sound": 1.0, "music": 0.7, "singing": 1.0}.
-                       None (default) disables per-type augmentation entirely.
-                       Pass only to *train* datasets; leave None for dev/eval.
+            aug_probs: dict mapping audio type → augmentation probability (train only).
+            speech_aug_method: ``none`` | ``rawboost`` | ``musan`` | ``audio_augmentor``
+                                 | ``noise`` | ``codec`` for **speech** when
+                                 ``aug_probs["speech"]`` > 0.
+                                 ``noise`` uses :class:`NoiseAugment` (AWGN vs SNR).
+                                 ``codec`` uses :class:`SpeechCodecRoundtripAugment`
+                                 (ffmpeg MP3/Opus/AAC/GSM-FR round-trip).
+            speech_rawboost_algo: RawBoost ``algo`` id (1–9) for speech when method is
+                                  ``rawboost`` (sound/singing still use algo 5).
+            musan_path: MUSAN root for ``musan`` or ``audio_augmentor``.
+            rir_path: RIR corpus root (OpenSR/RIRS_NOISES-style layout) for ``audio_augmentor``.
             music_aug_method: augmentation method applied to music samples when
                               aug_probs["music"] > 0.
-                              "pitch_shift"  → PitchShiftAugment (±1–3 semitones)
-                              "spec_augment" → SpecAugmentForAudio (freq-band masking)
-                       speech / sound / singing always use process_Rawboost_feature(algo=5).
             dev_subsample: When True, subsample the loaded rows per audio type using
                            stratified sampling over (label, generator) cells.
                            Budgets are defined in _DEV_SUBSAMPLE_BUDGET:
@@ -80,6 +95,56 @@ class atadd_dataset(Dataset):
         self.AudioAugmentor = AudioAugmentor()
         self.dev_subsample = dev_subsample
         self.dev_subsample_seed = dev_subsample_seed
+        self.speech_aug_method = str(speech_aug_method).strip().lower()
+        self.speech_rawboost_algo = int(speech_rawboost_algo)
+        self._musan_aug = None
+        self._speech_audio_augmentor = None
+        self._speech_codec_aug = None
+        self._speech_noise_aug = None
+
+        if (
+            self.speech_aug_method == "musan"
+            and musan_path
+            and os.path.isdir(musan_path)
+        ):
+            self._musan_aug = MusanSpeechAdditiveAugment(musan_path, sr=16000)
+            if not self._musan_aug.available():
+                print(
+                    f"[atadd_dataset] MUSAN root has no wav files under "
+                    f"noise/music/speech: {musan_path!r}"
+                )
+                self._musan_aug = None
+        elif self.speech_aug_method == "musan" and musan_path:
+            print(
+                f"[atadd_dataset] musan_path is not a directory; "
+                f"MUSAN speech aug disabled: {musan_path!r}"
+            )
+
+        if self.speech_aug_method == "audio_augmentor":
+            rp = (rir_path or "").strip()
+            mp = (musan_path or "").strip()
+            self._speech_audio_augmentor = AudioAugmentor(
+                rir_path=rp if rp else "your_path/RIRS_NOISES",
+                musan_path=mp if mp else "your_path/musan",
+            )
+            if not self._speech_audio_augmentor.usable_for_speech_aug():
+                print(
+                    "[atadd_dataset] speech_aug_method=audio_augmentor but no RIR files "
+                    "and no MUSAN wavs found — check rir_path / musan_path."
+                )
+                self._speech_audio_augmentor = None
+
+        if self.speech_aug_method == "codec":
+            self._speech_codec_aug = SpeechCodecRoundtripAugment(sr=16000)
+            if not self._speech_codec_aug.available():
+                print(
+                    "[atadd_dataset] speech_aug_method=codec requires ffmpeg on PATH; disabled."
+                )
+                self._speech_codec_aug = None
+
+        if self.speech_aug_method == "noise":
+            self._speech_noise_aug = NoiseAugment(snr_range=(10, 30))
+
         self.filter_types = None
         if filter_types is not None:
             self.filter_types = frozenset(t.lower() for t in filter_types)
@@ -95,7 +160,6 @@ class atadd_dataset(Dataset):
         self.aug_probs = None
         self._pitch_shift_aug = None
         self._spec_aug = None
-        self._noise_aug = None
         if aug_probs is not None:
             active = {k: float(v) for k, v in aug_probs.items() if float(v) > 0.0}
             if active:
@@ -112,8 +176,6 @@ class atadd_dataset(Dataset):
                         )
                     elif music_aug_method == "spec_augment":
                         self._spec_aug = SpecAugmentForAudio(sr=16000)
-                if "speech" in active:
-                    self._noise_aug = NoiseAugment()
 
         self.all_files = []
         with open(self.path_to_protocol, 'r', encoding='utf-8-sig') as f:
@@ -161,11 +223,35 @@ class atadd_dataset(Dataset):
                     wav_np = np.squeeze(waveform)
 
                 if class_type == "speech":
-                    augmented = self._noise_aug.apply(wav_np)
-                    if isinstance(augmented, torch.Tensor):
-                        waveform = augmented
+                    sm = self.speech_aug_method
+                    if sm == "rawboost":
+                        waveform = process_Rawboost_feature(
+                            np.asarray(wav_np, dtype=np.float32),
+                            sr=sr,
+                            algo=self.speech_rawboost_algo,
+                        )
+                    elif sm == "musan" and self._musan_aug is not None:
+                        out = self._musan_aug.apply(wav_np)
+                        waveform = torch.tensor(out, dtype=torch.float32)
+                    elif sm == "audio_augmentor" and self._speech_audio_augmentor is not None:
+                        out = self._speech_audio_augmentor.apply_random_room_noise_musan(wav_np)
+                        waveform = torch.tensor(out, dtype=torch.float32)
+                    elif sm == "codec" and self._speech_codec_aug is not None:
+                        out = self._speech_codec_aug.apply(wav_np)
+                        waveform = torch.tensor(out, dtype=torch.float32)
+                    elif sm == "noise" and self._speech_noise_aug is not None:
+                        out = self._speech_noise_aug.apply(
+                            np.asarray(wav_np, dtype=np.float32)
+                        )
+                        waveform = torch.tensor(
+                            np.asarray(out, dtype=np.float32),
+                            dtype=torch.float32,
+                        )
                     else:
-                        waveform = torch.tensor(augmented, dtype=torch.float32)
+                        waveform = torch.tensor(
+                            np.asarray(wav_np, dtype=np.float32),
+                            dtype=torch.float32,
+                        )
                 elif class_type == "music":
                     if self._pitch_shift_aug is not None:
                         augmented = self._pitch_shift_aug.apply(wav_np)
@@ -246,6 +332,21 @@ class atadd_dataset(Dataset):
                     if t == "music":
                         method = getattr(self, "music_aug_method", "pitch_shift")
                         aug_desc = f"{method}  p={p}"
+                    elif t == "speech":
+                        sm = getattr(self, "speech_aug_method", "none")
+                        if sm == "rawboost":
+                            algo = getattr(self, "speech_rawboost_algo", 5)
+                            aug_desc = f"RawBoost(algo={algo})  p={p}"
+                        elif sm == "musan":
+                            aug_desc = f"MUSAN additive  p={p}"
+                        elif sm == "audio_augmentor":
+                            aug_desc = f"AudioAugmentor (RIR+MUSAN random)  p={p}"
+                        elif sm == "codec":
+                            aug_desc = f"Codec round-trip (ffmpeg MP3/Opus/AAC/GSM-FR)  p={p}"
+                        elif sm == "noise":
+                            aug_desc = f"NoiseAugment (AWGN SNR 10–30 dB)  p={p}"
+                        else:
+                            aug_desc = f"(method={sm})  p={p}"
                     else:
                         aug_desc = f"RawBoost(algo=5)  p={p}"
                 else:

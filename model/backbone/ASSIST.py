@@ -364,7 +364,7 @@ class Residual_block(nn.Module):
 # =============================================================================
 
 class AASIST(nn.Module):
-    def __init__(self, in_dim=1024):
+    def __init__(self, in_dim=1024, assist_project_choice=0):
         super().__init__()
 
         # AASIST parameters
@@ -387,7 +387,26 @@ class AASIST(nn.Module):
             nn.Sequential(Residual_block(nb_filts=filts[4])),
             nn.Sequential(Residual_block(nb_filts=filts[4])),
             nn.Sequential(Residual_block(nb_filts=filts[4])))
-        self.LL = nn.Linear(in_dim, 128)
+
+        if assist_project_choice == 1:# MLP
+            self.LL = nn.Sequential(
+                nn.LayerNorm(in_dim),
+                nn.Linear(in_dim, 512),
+                nn.GELU(),
+                nn.Dropout(0.1),
+                nn.Linear(512, 128),
+            )
+        elif assist_project_choice == 2: # GRKAN
+            from model.backbone.KAN import KAN
+            self.LL = KAN(
+                in_features=in_dim,
+                hidden_features=512,
+                out_features=128,
+                drop=0.1,
+                act_init="gelu",
+            )
+        else: #default
+            self.LL = nn.Linear(in_dim, 128)
 
         self.attention = nn.Sequential(
             nn.Conv2d(64, 128, kernel_size=(1, 1)),

@@ -9,15 +9,31 @@ from __future__ import annotations
 
 import json
 import os
+from functools import partial
 
 import torch
 import torch.nn as nn
 from torch.utils.data import ConcatDataset, DataLoader
 import torch.utils.data.sampler as torch_sampler
 
+import random
+import numpy as np
+
 from model.model import build_model
 from data.dataset import atadd_dataset
 from utils.optimizer import SAM
+
+
+def _dataloader_worker_seed_init(worker_id: int, base_seed: int) -> None:
+    """Seed random/numpy/torch in a DataLoader worker (spawn-safe: top-level, picklable).
+
+    Used via ``functools.partial(..., base_seed=args.seed)`` so workers stay
+    deterministic under ``torch.multiprocessing`` start method ``spawn``.
+    """
+    seed = base_seed + worker_id
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 # ---------------------------------------------------------------------------
@@ -158,13 +174,25 @@ def build_dataloaders(args):
     aug_probs = {k: v for k, v in _raw_probs.items() if v > 0.0} or None
     if aug_probs:
         print(f"Per-type train augmentation: {aug_probs}  "
-              f"(music method: {args.music_aug_method})")
+              f"(music method: {args.music_aug_method}; "
+              f"speech aug: {getattr(args, 'speech_aug_method', 'none')})")
+
+    train_kw = dict(
+        audio_length=args.audio_len,
+        filter_types=ft,
+        aug_probs=aug_probs,
+        music_aug_method=args.music_aug_method,
+        speech_aug_method=getattr(args, "speech_aug_method", "none"),
+        speech_rawboost_algo=int(getattr(args, "speech_rawboost_algo", 5)),
+        musan_path=getattr(args, "musan_path", "") or "",
+        rir_path=getattr(args, "rir_path", "") or "",
+    )
 
     if args.train_task == "atadd-track1":
         train_ds = atadd_dataset(
-            args.atadd_t1_train_audio, args.atadd_t1_train_label,
-            audio_length=args.audio_len, filter_types=ft,
-            aug_probs=aug_probs, music_aug_method=args.music_aug_method,
+            args.atadd_t1_train_audio,
+            args.atadd_t1_train_label,
+            **train_kw,
         )
         val_ds = atadd_dataset(
             args.atadd_t1_dev_audio, args.atadd_t1_dev_label,
@@ -173,9 +201,9 @@ def build_dataloaders(args):
         )
     else:  # atadd-track2
         train_ds = atadd_dataset(
-            args.atadd_t2_train_audio, args.atadd_t2_train_label,
-            audio_length=args.audio_len, filter_types=ft,
-            aug_probs=aug_probs, music_aug_method=args.music_aug_method,
+            args.atadd_t2_train_audio,
+            args.atadd_t2_train_label,
+            **train_kw,
         )
         val_ds = atadd_dataset(
             args.atadd_t2_dev_audio, args.atadd_t2_dev_label,
@@ -186,17 +214,27 @@ def build_dataloaders(args):
     assert len(train_ds) > 0, f"Train dataset is empty — check paths in your config."
     assert len(val_ds)   > 0, f"Val dataset is empty — check paths in your config."
 
-    def _loader(ds, shuffle=False):
+    # Separate seeded generators so train / val data order is identical
+    # across runs with the same args.seed, regardless of model architecture.
+    g_train = torch.Generator()
+    g_train.manual_seed(args.seed)
+    g_val = torch.Generator()
+    g_val.manual_seed(args.seed + 1)
+
+    worker_init = partial(_dataloader_worker_seed_init, base_seed=args.seed)
+
+    def _make_loader(ds, g):
         return DataLoader(
             ds,
             batch_size=int(args.batch_size),
             shuffle=False,
             num_workers=args.num_workers,
-            sampler=torch_sampler.SubsetRandomSampler(range(len(ds))),
+            sampler=torch_sampler.SubsetRandomSampler(range(len(ds)), generator=g),
             pin_memory=args.cuda,
+            worker_init_fn=worker_init,
         )
 
-    return _loader(train_ds), _loader(val_ds)
+    return _make_loader(train_ds, g_train), _make_loader(val_ds, g_val)
 
 
 # ---------------------------------------------------------------------------
@@ -221,11 +259,15 @@ def build_full_dev_loader(args):
             audio_length=args.audio_len, filter_types=ft,
             dev_subsample=False,
         )
+    g_full = torch.Generator()
+    g_full.manual_seed(args.seed + 2)
+    worker_init = partial(_dataloader_worker_seed_init, base_seed=args.seed)
     return DataLoader(
         ds,
         batch_size=int(args.batch_size),
         shuffle=False,
         num_workers=args.num_workers,
-        sampler=torch_sampler.SubsetRandomSampler(range(len(ds))),
+        sampler=torch_sampler.SubsetRandomSampler(range(len(ds)), generator=g_full),
         pin_memory=args.cuda,
+        worker_init_fn=worker_init,
     )

@@ -1,6 +1,7 @@
-ckpt_*/
+ckpt*/
 __pycache__/
 conf/*/
 enable_env.sh
 clear_checkpoint.sh
 *_run.sh
+.claude/

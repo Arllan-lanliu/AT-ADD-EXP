@@ -205,6 +205,18 @@ def process_Rawboost_feature(feature, sr, algo=4, N_f=5, nBands=5, minF=20, maxF
         feature_para = feature1 + feature2
         feature = normWav(feature_para, 0)  # normalized resultant waveform
 
+    # Parallel (1||2) then coloured additive noise (3) in series
+    elif algo == 9:
+        feature1 = LnL_convolutive_noise(feature, N_f, nBands, minF, maxF, minBW, maxBW,
+                                         minCoeff, maxCoeff, minG, maxG, minBiasLinNonLin,
+                                         maxBiasLinNonLin, sr)
+        feature2 = ISD_additive_noise(feature, P, g_sd)
+        feature_para = feature1 + feature2
+        feature = normWav(feature_para, 0)
+        feature = SSI_additive_noise(feature, SNRmin, SNRmax, nBands, minF,
+                                     maxF, minBW, maxBW, minCoeff, maxCoeff, minG,
+                                     maxG, sr)
+
     # Data process by original data without Rawboost processing           
     else:
         feature = feature

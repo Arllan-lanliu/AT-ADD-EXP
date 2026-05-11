@@ -1,0 +1,52 @@
+# ── Data paths ────────────────────────────────────────────────────────────────
+data:
+  # Track 2
+  atadd_t1_train_audio: /data/liulan/workspace/dataset/at_add_track2/train
+  atadd_t1_train_label: /data/liulan/workspace/dataset/at_add_track2/labels/train.csv
+  atadd_t1_dev_audio:   /data/liulan/workspace/dataset/at_add_track2/dev
+  atadd_t1_dev_label:   /data/liulan/workspace/dataset/at_add_track2/labels/dev.csv
+  atadd_t1_eval_audio:  /data/liulan/workspace/dataset/at_add_track1/eval_t1
+
+# ── SSL model paths ───────────────────────────────────────────────────────────
+ssl:
+  xlsr:  /data/liulan/workspace/huggingface/wav2vec2-xls-r-300m
+  wavlm: /data/liulan/workspace/huggingface/wavlm-large
+  mert:  /data/liulan/workspace/huggingface/MERT-v1-330M
+  beats: /data/liulan/workspace/huggingface/BEATs_iter3
+  clap:  /data/liulan/workspace/huggingface/larger_clap_music_and_speech
+
+# ── Task & output ─────────────────────────────────────────────────────────────
+filter_types: speech  # Omit or empty = use all types.
+train_task: atadd-track1
+out_fold: ./ckpt_t1/ft_w2v2aasist_loss_grkan
+
+model: ft-w2v2aasist
+save_best_by: loss             # loss | eer | f1
+assist_project_choice: 2    # AASIST projector: 0 Linear | 1 MLP | 2 GRKAN
+
+# ── Audio augmentation (train only; dev loaders omit aug_probs) ─────────────
+aug:
+  aug_speech:          0.0
+  speech_aug_method:   none       # none | rawboost | musan | audio_augmentor | noise | codec
+  speech_rawboost_algo: 5        # RawBoost algo id 1–9 when rawboost
+  musan_path:          /data/liulan/workspace/dataset/musan
+  rir_path:            /data/liulan/workspace/dataset/RIRS_NOISES   # audio_augmentor (OpenSR/RIRS layout)
+
+# ── Training hyperparameters ──────────────────────────────────────────────────
+num_epochs:  100
+batch_size:  24
+lr:          0.000001
+lr_decay:    0.5    # LR multiplied by lr_decay every `interval` epochs
+interval:    2
+num_workers: 4
+
+
+
+# ── Evaluation schedule ───────────────────────────────────────────────────────
+eval_steps:        1000    # sample-dev eval every N steps (0 = epoch-end only)
+full_eval_steps:   6000   # full-dev eval every N steps (0 = disabled)
+eval_warmup_steps: 6000   # skip all evals for the first N global steps
+patience:          20      # early-stopping patience (sample-dev evals); 0 = off
+
+
+

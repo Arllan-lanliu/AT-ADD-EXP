@@ -31,6 +31,8 @@ Usage
 
     # Local-only W&B logs
     python main_train.py --config conf/experiments/xlsr_mert_add.yaml --wandb_mode offline
+
+    # Default is ``disabled`` (no W&B); same spirit as ``multi_main_train.py``.
 """
 
 from __future__ import annotations
@@ -100,10 +102,23 @@ class SSLConfig:
 class AugConfig:
     """Per-type audio augmentation settings (training set only)."""
 
-    aug_speech:  float = 0.0   # P(RawBoost algo-5 | speech sample)
+    aug_speech:  float = 0.0   # P(apply speech aug | speech sample)
     aug_sound:   float = 0.0   # P(RawBoost algo-5 | sound sample)
     aug_singing: float = 0.0   # P(RawBoost algo-5 | singing sample)
     aug_music:   float = 0.0   # P(music aug | music sample)
+
+    speech_aug_method: str = "none"
+    """Speech branch when ``aug_speech`` > 0: ``none`` | ``rawboost`` | ``musan``
+    | ``audio_augmentor`` | ``noise`` (AWGN vs SNR) | ``codec`` (ffmpeg round-trip)."""
+
+    speech_rawboost_algo: int = 5
+    """RawBoost ``process_Rawboost_feature`` algo id (1–9) for speech when method is ``rawboost``."""
+
+    musan_path: str = "your_path/musan"
+    """MUSAN root for ``musan`` or ``audio_augmentor`` speech augmentation."""
+
+    rir_path: str = "your_path/RIRS_NOISES"
+    """OpenSR/RIRS-style tree for ``audio_augmentor`` (room impulse responses)."""
 
     music_aug_method: str = "spec_augment"
     """``pitch_shift``: ±1–3 semitones;  ``spec_augment``: frequency-band masking."""
@@ -111,6 +126,17 @@ class AugConfig:
     def __post_init__(self) -> None:
         for name in ("aug_speech", "aug_sound", "aug_singing", "aug_music"):
             _validate_range(getattr(self, name), 0.0, 1.0, name)
+        sm = self.speech_aug_method.strip().lower()
+        _validate_choice(
+            sm,
+            ("none", "rawboost", "musan", "audio_augmentor", "noise", "codec"),
+            "speech_aug_method",
+        )
+        object.__setattr__(self, "speech_aug_method", sm)
+        if not (1 <= int(self.speech_rawboost_algo) <= 9):
+            raise ValueError(
+                f"speech_rawboost_algo must be in [1, 9], got {self.speech_rawboost_algo!r}"
+            )
         _validate_choice(
             self.music_aug_method,
             ("pitch_shift", "spec_augment"),
@@ -175,6 +201,9 @@ class ATADDConfig:
     type_loss_weight: float = 0.1
     """Weight of the auxiliary type-classification loss (fusion=type_aware only)."""
 
+    assist_project_choice: int = 0
+    """AASIST input projector: ``0`` Linear (default), ``1`` MLP, ``2`` GRKAN."""
+
     # ── Training hyperparameters ─────────────────────────────────────────────
     num_epochs:        int   = 20
     batch_size:        int   = 24
@@ -227,6 +256,11 @@ class ATADDConfig:
         _validate_choice(
             self.eval_threshold_mode, _VALID_EVAL_THRESHOLD_MODES, "eval_threshold_mode"
         )
+        if self.assist_project_choice not in (0, 1, 2):
+            raise ValueError(
+                "assist_project_choice must be 0, 1, or 2, "
+                f"got {self.assist_project_choice!r}"
+            )
 
         _validate_positive(self.audio_len,  "audio_len")
         _validate_positive(self.num_epochs, "num_epochs")
@@ -396,11 +430,11 @@ def _wb_parser() -> argparse.ArgumentParser:
                    help="W&B run name (default: basename of out_fold).")
     p.add_argument("--wandb_entity",   type=str, default=None)
     p.add_argument(
-        "--wandb_mode", type=str, default="online",
-        choices=("online", "offline"),
+        "--wandb_mode", type=str, default="disabled",
+        choices=("online", "offline", "disabled"),
         help=(
-            "W&B sync mode: ``online`` uploads to wandb.ai (needs ``wandb login`` or "
-            "``WANDB_API_KEY``); ``offline`` writes logs locally only."
+            "W&B mode: ``online`` syncs to wandb.ai; ``offline`` writes local runs only; "
+            "``disabled`` skips ``wandb.init`` entirely (default)."
         ),
     )
     p.add_argument("--no_wandb", action="store_true",

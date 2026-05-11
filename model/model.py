@@ -22,7 +22,14 @@ except ImportError:
 
 # default
 class XLSRAASIST(nn.Module):
-    def __init__(self, model_dir, device='cuda', freeze = True, visual=False):
+    def __init__(
+        self,
+        model_dir,
+        device='cuda',
+        freeze=True,
+        visual=False,
+        assist_project_choice=0,
+    ):
         super(XLSRAASIST, self).__init__()
 
         # Initialize XLSRWithPrompt (features extractor)
@@ -34,7 +41,7 @@ class XLSRAASIST(nn.Module):
         )
 
         # Initialize W2VAASIST (main model)
-        self.w2vaasist = AASIST()
+        self.w2vaasist = AASIST(assist_project_choice=assist_project_choice)
         self.visual = visual
     def forward(self, audio_data, output_attentions=False):
         if output_attentions:
@@ -80,8 +87,16 @@ class XLSRMERTAASIST(nn.Module):
       type_aware  : dynamic per-type weights with auxiliary type-classification
                     loss (access side-channel via model._last_type_logits)
     """
-    def __init__(self, xlsr_model_dir, mert_model_dir, device='cuda',
-                 freeze=True, visual=False, fusion='cat_linear'):
+    def __init__(
+        self,
+        xlsr_model_dir,
+        mert_model_dir,
+        device='cuda',
+        freeze=True,
+        visual=False,
+        fusion='cat_linear',
+        assist_project_choice=0,
+    ):
         super(XLSRMERTAASIST, self).__init__()
 
         self.xlsr = XLSR(
@@ -97,7 +112,9 @@ class XLSRMERTAASIST(nn.Module):
         )
         # XLSR-300M and MERT-v1-330M are both 1024-d; fuse to 1024 for SSLAASIST.
         self.fusion_module = build_fusion_module(fusion, 1024, 1024, 1024)
-        self.w2vaasist = AASIST(in_dim=1024)
+        self.w2vaasist = AASIST(
+            in_dim=1024, assist_project_choice=assist_project_choice
+        )
         self.visual = visual
         # Side-channel: set by _fuse_features when fusion == 'type_aware'.
         self._last_type_logits = None
@@ -376,6 +393,11 @@ def _fusion(args) -> str:
     return getattr(args, 'fusion', 'cat_linear')
 
 
+def _assist_project_choice(args) -> int:
+    """AASIST projector mode from config (0 Linear, 1 MLP, 2 GRKAN)."""
+    return int(getattr(args, "assist_project_choice", 0))
+
+
 # ── Conventional CM ───────────────────────────────────────────────────────────
 
 @register_model('aasist')
@@ -394,7 +416,9 @@ def _build_specresnet(args):
 def _build_fr_w2v2aasist(args):
     return SingleSSLModel(
         frontend=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=True),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -402,7 +426,9 @@ def _build_fr_w2v2aasist(args):
 def _build_fr_wavlmaasist(args):
     return SingleSSLModel(
         frontend=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=True),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -410,7 +436,9 @@ def _build_fr_wavlmaasist(args):
 def _build_fr_mertaasist(args):
     return SingleSSLModel(
         frontend=MERT(model_dir=args.mert, device=_dev(args), freeze=True),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -420,7 +448,9 @@ def _build_fr_mertaasist(args):
 def _build_ft_w2v2aasist(args):
     return SingleSSLModel(
         frontend=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -431,6 +461,7 @@ def _build_ft_w2v2assist_baseline(args):
         model_dir=args.xlsr,
         device=_dev(args),
         freeze=False,
+        assist_project_choice=_assist_project_choice(args),
     )
 
 
@@ -438,7 +469,9 @@ def _build_ft_w2v2assist_baseline(args):
 def _build_ft_wavlmaasist(args):
     return SingleSSLModel(
         frontend=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=False),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -446,7 +479,9 @@ def _build_ft_wavlmaasist(args):
 def _build_ft_mertaasist(args):
     return SingleSSLModel(
         frontend=MERT(model_dir=args.mert, device=_dev(args), freeze=False),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -455,7 +490,9 @@ def _build_ft_beatsaasist(args):
     # BEATs encoder stays frozen; only the AASIST head is fine-tuned
     return SingleSSLModel(
         frontend=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
-        backend=AASIST(in_dim=768),
+        backend=AASIST(
+            in_dim=768, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -463,7 +500,9 @@ def _build_ft_beatsaasist(args):
 def _build_ft_clapaasist(args):
     return SingleSSLModel(
         frontend=CLAP(model_dir=args.clap, device=_dev(args), freeze=False),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
         feat_preprocess=_clap_preprocess,
     )
 
@@ -476,7 +515,9 @@ def _build_ft_xlsrwavlmaasist(args):
         frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
         frontend_b=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=False),
         fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -488,7 +529,9 @@ def _build_ft_xlsrbeatsaasist(args):
         frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
         frontend_b=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
         fusion_module=build_fusion_module(_fusion(args), 1024, 768, 1024),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -507,6 +550,7 @@ def _build_ft_xlsrmertaasist(args):
         freeze=False,
         visual=False,
         fusion=_fusion(args),
+        assist_project_choice=_assist_project_choice(args),
     )
 
 
@@ -516,7 +560,9 @@ def _build_ft_xlsrclapaasist(args):
         frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
         frontend_b=CLAP(model_dir=args.clap, device=_dev(args), freeze=False),
         fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -532,7 +578,9 @@ def _build_pt_w2v2aasist(args):
             num_prompt_tokens=args.num_prompt_tokens,
             dropout=args.pt_dropout,
         ),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -546,7 +594,9 @@ def _build_pt_wavlmaasist(args):
             num_prompt_tokens=args.num_prompt_tokens,
             dropout=args.pt_dropout,
         ),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -560,7 +610,9 @@ def _build_pt_mertaasist(args):
             num_prompt_tokens=args.num_prompt_tokens,
             dropout=args.pt_dropout,
         ),
-        backend=AASIST(in_dim=1024),
+        backend=AASIST(
+            in_dim=1024, assist_project_choice=_assist_project_choice(args)
+        ),
     )
 
 
@@ -581,7 +633,9 @@ if _WPT_AVAILABLE:
                 num_wavelet_tokens=args.num_wavelet_tokens,
                 dropout=args.pt_dropout,
             ),
-            backend=AASIST(in_dim=1024),
+            backend=AASIST(
+                in_dim=1024, assist_project_choice=_assist_project_choice(args)
+            ),
         )
 
     @register_model('wpt-wavlmaasist')
@@ -595,7 +649,9 @@ if _WPT_AVAILABLE:
                 num_wavelet_tokens=args.num_wavelet_tokens,
                 dropout=args.pt_dropout,
             ),
-            backend=AASIST(in_dim=1024),
+            backend=AASIST(
+                in_dim=1024, assist_project_choice=_assist_project_choice(args)
+            ),
         )
 
     @register_model('wpt-mertaasist')
@@ -609,5 +665,7 @@ if _WPT_AVAILABLE:
                 num_wavelet_tokens=args.num_wavelet_tokens,
                 dropout=args.pt_dropout,
             ),
-            backend=AASIST(in_dim=1024),
+            backend=AASIST(
+                in_dim=1024, assist_project_choice=_assist_project_choice(args)
+            ),
         )

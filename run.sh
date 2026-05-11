@@ -6,8 +6,8 @@ RUN_TRAIN=1              # 1 = 训练
 RUN_SCORE=1              # 1 = 生成 eval 集预测分数（inference）
 RUN_DEV_ANALYZE=0        # 1 = dev 集分析
 
-# W&B: online = 同步到 wandb.ai（需先 wandb login 或设置 WANDB_API_KEY）；offline = 仅本地
-wandb_mode=online
+# W&B: offline = 默认（免外网/证书问题）；online = 同步 wandb.ai（SSL 失败时 main_train 会自动改 offline）
+wandb_mode=offline
 wandb_project="AT-ADD-Baseline"
 wandb_entity=""          # 可选：用户名或 team，留空则用默认 entity
 wandb_run_name=""        # 可选：留空则用 out_fold 目录名

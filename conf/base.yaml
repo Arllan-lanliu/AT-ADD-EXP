@@ -22,6 +22,7 @@ out_fold: ./ckpt_update_t2/default_run
 
 model: ft-xlsrmertaasist
 fusion: add                  # sed for dual-SSL models
+assist_project_choice: 0    # AASIST projector: 0 Linear | 1 MLP | 2 GRKAN
 save_best_by: f1             # loss | eer | f1
 
 # ── Audio augmentation (all disabled by default) ──────────────────────────────
