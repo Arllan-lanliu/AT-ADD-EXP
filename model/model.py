@@ -29,6 +29,8 @@ class XLSRAASIST(nn.Module):
         freeze=True,
         visual=False,
         assist_project_choice=0,
+        selected_layers=None,
+        layer_fusion="last",
     ):
         super(XLSRAASIST, self).__init__()
 
@@ -37,7 +39,9 @@ class XLSRAASIST(nn.Module):
             model_dir=model_dir,
             device=device,
             freeze=freeze,
-            visual=visual
+            visual=visual,
+            selected_layers=selected_layers,
+            layer_fusion=layer_fusion,
         )
 
         # Initialize W2VAASIST (main model)
@@ -96,6 +100,8 @@ class XLSRMERTAASIST(nn.Module):
         visual=False,
         fusion='cat_linear',
         assist_project_choice=0,
+        selected_layers=None,
+        layer_fusion="last",
     ):
         super(XLSRMERTAASIST, self).__init__()
 
@@ -104,6 +110,8 @@ class XLSRMERTAASIST(nn.Module):
             device=device,
             freeze=freeze,
             visual=visual,
+            selected_layers=selected_layers,
+            layer_fusion=layer_fusion,
         )
         self.mert = MERT(
             model_dir=mert_model_dir,
@@ -398,6 +406,13 @@ def _assist_project_choice(args) -> int:
     return int(getattr(args, "assist_project_choice", 0))
 
 
+def _xlsr_frontend_kw(args) -> dict:
+    """Optional multi-layer fusion kwargs for :class:`SSL.XLSR` (from flat ``args``)."""
+    sl = getattr(args, "selected_layers", None)
+    lf = getattr(args, "layer_fusion", None)
+    if lf is None:
+        lf = "last"
+    return {"selected_layers": sl, "layer_fusion": str(lf)}
 # ── Conventional CM ───────────────────────────────────────────────────────────
 
 @register_model('aasist')
@@ -415,7 +430,12 @@ def _build_specresnet(args):
 @register_model('fr-w2v2aasist')
 def _build_fr_w2v2aasist(args):
     return SingleSSLModel(
-        frontend=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=True),
+        frontend=XLSR(
+            model_dir=args.xlsr,
+            device=_dev(args),
+            freeze=True,
+            **_xlsr_frontend_kw(args),
+        ),
         backend=AASIST(
             in_dim=1024, assist_project_choice=_assist_project_choice(args)
         ),
@@ -447,7 +467,12 @@ def _build_fr_mertaasist(args):
 @register_model('ft-w2v2aasist')
 def _build_ft_w2v2aasist(args):
     return SingleSSLModel(
-        frontend=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+        frontend=XLSR(
+            model_dir=args.xlsr,
+            device=_dev(args),
+            freeze=False,
+            **_xlsr_frontend_kw(args),
+        ),
         backend=AASIST(
             in_dim=1024, assist_project_choice=_assist_project_choice(args)
         ),
@@ -457,11 +482,13 @@ def _build_ft_w2v2aasist(args):
 @register_model('ft-w2v2assist_baseline')
 def _build_ft_w2v2assist_baseline(args):
     # Alias for the baseline XLSR + AASIST fine-tuning setup.
+    kw = _xlsr_frontend_kw(args)
     return XLSRAASIST(
         model_dir=args.xlsr,
         device=_dev(args),
         freeze=False,
         assist_project_choice=_assist_project_choice(args),
+        **kw,
     )
 
 
@@ -512,7 +539,12 @@ def _build_ft_clapaasist(args):
 @register_model('ft-xlsrwavlmaasist')
 def _build_ft_xlsrwavlmaasist(args):
     return DualSSLModel(
-        frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+        frontend_a=XLSR(
+            model_dir=args.xlsr,
+            device=_dev(args),
+            freeze=False,
+            **_xlsr_frontend_kw(args),
+        ),
         frontend_b=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=False),
         fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
         backend=AASIST(
@@ -526,7 +558,12 @@ def _build_ft_xlsrbeatsaasist(args):
     # BEATs output is 768-d; CatLinear(1024+768→1024) is the only valid fusion here.
     # The --fusion argument is not applicable for this combination.
     return DualSSLModel(
-        frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+        frontend_a=XLSR(
+            model_dir=args.xlsr,
+            device=_dev(args),
+            freeze=False,
+            **_xlsr_frontend_kw(args),
+        ),
         frontend_b=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
         fusion_module=build_fusion_module(_fusion(args), 1024, 768, 1024),
         backend=AASIST(
@@ -551,13 +588,19 @@ def _build_ft_xlsrmertaasist(args):
         visual=False,
         fusion=_fusion(args),
         assist_project_choice=_assist_project_choice(args),
+        **_xlsr_frontend_kw(args),
     )
 
 
 @register_model('ft-xlsrclapaasist')
 def _build_ft_xlsrclapaasist(args):
     return DualSSLModel(
-        frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
+        frontend_a=XLSR(
+            model_dir=args.xlsr,
+            device=_dev(args),
+            freeze=False,
+            **_xlsr_frontend_kw(args),
+        ),
         frontend_b=CLAP(model_dir=args.clap, device=_dev(args), freeze=False),
         fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
         backend=AASIST(

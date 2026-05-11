@@ -12,10 +12,151 @@ from transformers import (
     AutoModel, AutoFeatureExtractor,
 )
 
-
 class XLSR(nn.Module):
-    def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True, visual=False, return_hidden_states=False):
+    def __init__(
+        self,
+        model_dir,
+        device="cuda",
+        sampling_rate=16000,
+        freeze=True,
+        visual=False,
+        return_hidden_states=False,
+        selected_layers=None,
+        layer_fusion="last",  # "last", "cat", "mean"
+    ):
         super(XLSR, self).__init__()
+
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.sampling_rate = sampling_rate
+        self.return_hidden_states = return_hidden_states
+        self.selected_layers = (
+            tuple(int(i) for i in selected_layers) if selected_layers is not None else None
+        )
+
+        self.config = Wav2Vec2Config.from_json_file(f"{model_dir}/config.json")
+        self.processor = Wav2Vec2FeatureExtractor.from_pretrained(
+            model_dir,
+            do_normalize=False,
+        )
+        self.model = Wav2Vec2Model.from_pretrained(model_dir).to(self.device)
+        self.freeze = freeze
+
+        # 必须打开，否则 outputs.hidden_states 会是 None
+        self.model.config.output_hidden_states = True
+
+        self.visual = visual
+
+        if freeze:
+            self.model.eval()
+            for param in self.model.parameters():
+                param.requires_grad = False
+        else:
+            self.model.train()
+
+        self.hidden_size = self.model.config.hidden_size  # XLSR-300M 通常是 1024
+
+        lf = str(layer_fusion).strip().lower()
+        self.layer_fusion = lf
+        if lf in ("cat", "mean"):
+            if not self.selected_layers:
+                raise ValueError(
+                    "XLSR: selected_layers must be a non-empty sequence when "
+                    f"layer_fusion={lf!r}"
+                )
+
+        n_sel = len(self.selected_layers) if self.selected_layers else 0
+        if lf == "cat" and n_sel > 0:
+            self.layer_proj = nn.Sequential(
+                nn.LayerNorm(self.hidden_size * n_sel),
+                nn.Linear(self.hidden_size * n_sel, self.hidden_size),
+                nn.GELU(),
+                nn.Dropout(0.1),
+            )
+        else:
+            self.layer_proj = None
+
+    def _fuse_hidden_states(self, outputs):
+        last_hidden_state = outputs.last_hidden_state
+        hidden_states = outputs.hidden_states
+
+        if self.layer_fusion == "last" or not self.selected_layers:
+            return last_hidden_state, hidden_states
+
+        n_h = len(hidden_states)
+        for i in self.selected_layers:
+            if i < 0 or i >= n_h:
+                raise IndexError(
+                    f"selected_layers index {i} out of range for "
+                    f"{n_h} hidden_states (valid 0..{n_h - 1})."
+                )
+
+        selected = [hidden_states[i] for i in self.selected_layers]
+
+        if self.layer_fusion == "cat":
+            # [B, T, C] * N -> [B, T, C*N] -> [B, T, C]
+            fused = torch.cat(selected, dim=-1)
+            fused = self.layer_proj(fused)
+
+        elif self.layer_fusion == "mean":
+            # [B, T, C] * N -> [B, T, C]
+            fused = torch.stack(selected, dim=0).mean(dim=0)
+
+        else:
+            raise ValueError(
+                f"Unsupported layer_fusion={self.layer_fusion}. "
+                "Choose from ['last', 'cat', 'mean']."
+            )
+
+        return fused, hidden_states
+
+    def forward(self, audio_data):
+        feat = self.processor(
+            audio_data,
+            sampling_rate=self.sampling_rate,
+            return_tensors="pt",
+        ).input_values.to(self.device)
+
+        feat = feat.squeeze(dim=0)
+
+        if self.visual:
+            outputs = self.model(
+                feat,
+                output_attentions=True,
+                output_hidden_states=True,
+            )
+            attentions = outputs.attentions
+            fused, hidden_states = self._fuse_hidden_states(outputs)
+
+            if self.return_hidden_states:
+                return fused, attentions, hidden_states
+            return fused, attentions
+
+        if self.freeze:
+            with torch.no_grad():
+                outputs = self.model(
+                    feat,
+                    output_hidden_states=True,
+                )
+                fused, hidden_states = self._fuse_hidden_states(outputs)
+        else:
+            outputs = self.model(
+                feat,
+                output_hidden_states=True,
+            )
+            fused, hidden_states = self._fuse_hidden_states(outputs)
+
+        if self.return_hidden_states:
+            return fused, hidden_states
+
+        return fused
+
+    def extract_features(self, audio_data):
+        return self.forward(audio_data)
+
+
+class XLSR_init(nn.Module):
+    def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True, visual=False, return_hidden_states=False):
+        super(XLSR_init, self).__init__()
 
         # Set device (GPU or CPU)
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')

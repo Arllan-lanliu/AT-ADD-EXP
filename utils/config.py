@@ -42,7 +42,7 @@ import dataclasses
 import os
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +96,40 @@ class SSLConfig:
     mert:  str = "your_path_to_huggingface/MERT-v1-330M"
     beats: str = "your_path_to_huggingface/BEATs_iter3"
     clap:  str = "your_path_to_huggingface/larger_clap_music_and_speech"
+
+    selected_layers: Optional[List[int]] = None
+    """**XLSR only.** Indices into HuggingFace ``outputs.hidden_states``: index ``0``
+    is post-convolution embedding, ``1`` … ``num_hidden_layers`` are transformer
+    layers.  For XLS-R 300M this is typically ``0`` … ``24``.  Required when
+    ``layer_fusion`` is ``cat`` or ``mean``."""
+
+    layer_fusion: str = "last"
+    """**XLSR only.** ``last``: final layer only; ``cat``: concatenate selected
+    layers then Linear→1024; ``mean``: mean-pool selected layers (same ``C``)."""
+
+    def __post_init__(self) -> None:
+        lf = str(self.layer_fusion).strip().lower()
+        object.__setattr__(self, "layer_fusion", lf)
+        _validate_choice(lf, ("last", "cat", "mean"), "layer_fusion")
+        sl = self.selected_layers
+        if sl is not None:
+            if not isinstance(sl, (list, tuple)):
+                raise TypeError(
+                    f"selected_layers must be a list of ints or null, "
+                    f"got {type(sl).__name__}"
+                )
+            sl_norm = [int(x) for x in sl]
+            object.__setattr__(
+                self,
+                "selected_layers",
+                None if len(sl_norm) == 0 else sl_norm,
+            )
+        if lf != "last":
+            if not self.selected_layers:
+                raise ValueError(
+                    "ssl.selected_layers must be a non-empty list when "
+                    f"layer_fusion is {lf!r}"
+                )
 
 
 @dataclass
