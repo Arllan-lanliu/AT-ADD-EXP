@@ -2,6 +2,7 @@ import librosa
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 from model.beats.BEATs import BEATsModel
 import torchaudio
@@ -22,7 +23,7 @@ class XLSR(nn.Module):
         visual=False,
         return_hidden_states=False,
         selected_layers=None,
-        layer_fusion="last",  # "last", "cat", "mean"
+        layer_fusion="last",  # "last", "cat_linear", "cat_proj", "mean", "weight_sum"
     ):
         super(XLSR, self).__init__()
 
@@ -56,33 +57,71 @@ class XLSR(nn.Module):
         self.hidden_size = self.model.config.hidden_size  # XLSR-300M 通常是 1024
 
         lf = str(layer_fusion).strip().lower()
+        if lf == "cat":
+            lf = "cat_proj"
         self.layer_fusion = lf
-        if lf in ("cat", "mean"):
+        if lf in ("cat_linear", "cat_proj", "mean", "weight_sum"):
             if not self.selected_layers:
                 raise ValueError(
                     "XLSR: selected_layers must be a non-empty sequence when "
                     f"layer_fusion={lf!r}"
                 )
+        elif lf == "last" and self.selected_layers is not None:
+            if len(self.selected_layers) > 1:
+                raise ValueError(
+                    "XLSR: layer_fusion='last' accepts at most one "
+                    f"selected_layers index; got {self.selected_layers!r}"
+                )
 
         n_sel = len(self.selected_layers) if self.selected_layers else 0
-        if lf == "cat" and n_sel > 0:
+        self.per_layer_ln = None
+        self.layer_proj = None
+        self.cat_linear_head = None
+        self.layer_weights = None
+
+        if lf == "cat_linear" and n_sel > 0:
+            self.cat_linear_head = nn.Linear(
+                self.hidden_size * n_sel, self.hidden_size
+            )
+        elif lf == "cat_proj" and n_sel > 0:
+            self.per_layer_ln = nn.ModuleList(
+                [nn.LayerNorm(self.hidden_size) for _ in range(n_sel)]
+            )
             self.layer_proj = nn.Sequential(
                 nn.LayerNorm(self.hidden_size * n_sel),
                 nn.Linear(self.hidden_size * n_sel, self.hidden_size),
-                nn.GELU(),
                 nn.Dropout(0.1),
             )
-        else:
-            self.layer_proj = None
+        elif lf == "weight_sum" and n_sel > 0:
+            self.layer_weights = nn.Parameter(torch.zeros(n_sel))
 
     def _fuse_hidden_states(self, outputs):
         last_hidden_state = outputs.last_hidden_state
         hidden_states = outputs.hidden_states
+        n_h = len(hidden_states)
 
-        if self.layer_fusion == "last" or not self.selected_layers:
+        # "last": default final layer, OR a single explicit index in selected_layers.
+        # Do not return last_hidden_state when user picked one intermediate layer.
+        if self.layer_fusion == "last":
+            if not self.selected_layers:
+                return last_hidden_state, hidden_states
+            if len(self.selected_layers) > 1:
+                raise ValueError(
+                    "XLSR: layer_fusion='last' accepts at most one index in "
+                    "selected_layers; for multiple layers use cat_linear, cat_proj, "
+                    f"mean, or weight_sum. Got selected_layers={self.selected_layers!r}."
+                )
+            idx = self.selected_layers[0]
+            if idx < 0 or idx >= n_h:
+                raise IndexError(
+                    f"selected_layers index {idx} out of range for "
+                    f"{n_h} hidden_states (valid 0..{n_h - 1})."
+                )
+            return hidden_states[idx], hidden_states
+
+        if not self.selected_layers:
             return last_hidden_state, hidden_states
 
-        n_h = len(hidden_states)
         for i in self.selected_layers:
             if i < 0 or i >= n_h:
                 raise IndexError(
@@ -92,19 +131,31 @@ class XLSR(nn.Module):
 
         selected = [hidden_states[i] for i in self.selected_layers]
 
-        if self.layer_fusion == "cat":
-            # [B, T, C] * N -> [B, T, C*N] -> [B, T, C]
+        if self.layer_fusion == "cat_linear":
+            # Direct concat [B,T,C*N] -> Linear -> [B,T,C]
             fused = torch.cat(selected, dim=-1)
+            fused = self.cat_linear_head(fused)
+
+        elif self.layer_fusion == "cat_proj":
+            # Per-layer LN -> concat [B,T,C*N] -> project -> [B,T,C]
+            normed = [
+                ln(h) for ln, h in zip(self.per_layer_ln, selected)
+            ]
+            fused = torch.cat(normed, dim=-1)
             fused = self.layer_proj(fused)
 
         elif self.layer_fusion == "mean":
             # [B, T, C] * N -> [B, T, C]
             fused = torch.stack(selected, dim=0).mean(dim=0)
 
+        elif self.layer_fusion == "weight_sum":
+            weights = F.softmax(self.layer_weights, dim=0)
+            fused = sum(w * h for w, h in zip(weights, selected))
+
         else:
             raise ValueError(
                 f"Unsupported layer_fusion={self.layer_fusion}. "
-                "Choose from ['last', 'cat', 'mean']."
+                "Choose from ['last', 'cat_linear', 'cat_proj', 'mean', 'weight_sum']."
             )
 
         return fused, hidden_states

@@ -98,19 +98,27 @@ class SSLConfig:
     clap:  str = "your_path_to_huggingface/larger_clap_music_and_speech"
 
     selected_layers: Optional[List[int]] = None
-    """**XLSR only.** Indices into HuggingFace ``outputs.hidden_states``: index ``0``
-    is post-convolution embedding, ``1`` … ``num_hidden_layers`` are transformer
-    layers.  For XLS-R 300M this is typically ``0`` … ``24``.  Required when
-    ``layer_fusion`` is ``cat`` or ``mean``."""
+    """**XLSR only.** Indices into HuggingFace ``outputs.hidden_states``.
+    With ``layer_fusion: last``: omit or empty → model top ``last_hidden_state``;
+    **one** index → that layer only; multiple indices are invalid.
+    With other fusion modes: non-empty list required."""
 
     layer_fusion: str = "last"
-    """**XLSR only.** ``last``: final layer only; ``cat``: concatenate selected
-    layers then Linear→1024; ``mean``: mean-pool selected layers (same ``C``)."""
+    """**XLSR only.** ``last``: final layer (default), or the single layer given by
+    ``selected_layers``; ``cat_linear`` / ``cat_proj`` / ``mean`` / ``weight_sum``:
+    fuse all listed layers (including when only one index is listed — projection /
+    weights still apply)."""
 
     def __post_init__(self) -> None:
         lf = str(self.layer_fusion).strip().lower()
+        if lf == "cat":
+            lf = "cat_proj"
         object.__setattr__(self, "layer_fusion", lf)
-        _validate_choice(lf, ("last", "cat", "mean"), "layer_fusion")
+        _validate_choice(
+            lf,
+            ("last", "cat_linear", "cat_proj", "mean", "weight_sum"),
+            "layer_fusion",
+        )
         sl = self.selected_layers
         if sl is not None:
             if not isinstance(sl, (list, tuple)):
@@ -130,7 +138,14 @@ class SSLConfig:
                     "ssl.selected_layers must be a non-empty list when "
                     f"layer_fusion is {lf!r}"
                 )
-
+        elif (
+            self.selected_layers is not None and len(self.selected_layers) > 1
+        ):
+            raise ValueError(
+                "layer_fusion='last' does not support multiple selected_layers; "
+                "omit selected_layers, pass a single index, or use cat_linear / "
+                "cat_proj / mean / weight_sum."
+            )
 
 @dataclass
 class AugConfig:

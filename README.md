@@ -44,6 +44,11 @@ Please download the AT-ADD dataset and organize it as follows:
 >> conda create -n atadd3.10 python=3.10.13
 >> conda activate atadd3.10
 >> pip install -r requirements.txt
+
+pip install timm==1.0.3
+git clone https://github.com/Adamdad/rational_kat_cu.git
+cd rational_kat_cu
+pip install -e .
 ```
 
 ---
