@@ -16,7 +16,7 @@ ssl:
   clap:  your_path/larger_clap_music_and_speech
   # XLSR multi-layer readout (ignored by non-XLSR frontends):
   selected_layers: null     # e.g. [8, 16, 24]; required unless layer_fusion is last
-  layer_fusion: last       # last | cat_linear | cat_proj | mean | weight_sum  (alias: cat -> cat_proj)
+  layer_fusion: last       # last | cat_linear | cat_proj_v1 | cat_proj_v2 | mean | weight_sum  (cat / cat_proj -> cat_proj_v2)
 # ── Task & output ─────────────────────────────────────────────────────────────
 filter_types: speech,sound,music,singing   # Omit or empty = use all types.
 train_task: atadd-track2

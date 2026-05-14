@@ -105,18 +105,28 @@ class SSLConfig:
 
     layer_fusion: str = "last"
     """**XLSR only.** ``last``: final layer (default), or the single layer given by
-    ``selected_layers``; ``cat_linear`` / ``cat_proj`` / ``mean`` / ``weight_sum``:
+    ``selected_layers``; ``cat_linear`` / ``cat_proj_v1`` / ``cat_proj_v2`` /
+    ``mean`` / ``weight_sum`` (aliases: ``cat`` / ``cat_proj`` → ``cat_proj_v2``):
     fuse all listed layers (including when only one index is listed — projection /
     weights still apply)."""
 
     def __post_init__(self) -> None:
         lf = str(self.layer_fusion).strip().lower()
         if lf == "cat":
-            lf = "cat_proj"
+            lf = "cat_proj_v2"
+        elif lf == "cat_proj":
+            lf = "cat_proj_v2"
         object.__setattr__(self, "layer_fusion", lf)
         _validate_choice(
             lf,
-            ("last", "cat_linear", "cat_proj", "mean", "weight_sum"),
+            (
+                "last",
+                "cat_linear",
+                "cat_proj_v1",
+                "cat_proj_v2",
+                "mean",
+                "weight_sum",
+            ),
             "layer_fusion",
         )
         sl = self.selected_layers
@@ -144,7 +154,7 @@ class SSLConfig:
             raise ValueError(
                 "layer_fusion='last' does not support multiple selected_layers; "
                 "omit selected_layers, pass a single index, or use cat_linear / "
-                "cat_proj / mean / weight_sum."
+                "cat_proj_v1 / cat_proj_v2 / mean / weight_sum."
             )
 
 @dataclass

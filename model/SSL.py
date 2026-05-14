@@ -23,7 +23,7 @@ class XLSR(nn.Module):
         visual=False,
         return_hidden_states=False,
         selected_layers=None,
-        layer_fusion="last",  # "last", "cat_linear", "cat_proj", "mean", "weight_sum"
+        layer_fusion="last",  # "last", "cat_linear", "cat_proj_v1", "cat_proj_v2", "mean", "weight_sum"
     ):
         super(XLSR, self).__init__()
 
@@ -58,9 +58,17 @@ class XLSR(nn.Module):
 
         lf = str(layer_fusion).strip().lower()
         if lf == "cat":
-            lf = "cat_proj"
+            lf = "cat_proj_v2"
+        elif lf == "cat_proj":
+            lf = "cat_proj_v2"
         self.layer_fusion = lf
-        if lf in ("cat_linear", "cat_proj", "mean", "weight_sum"):
+        if lf in (
+            "cat_linear",
+            "cat_proj_v1",
+            "cat_proj_v2",
+            "mean",
+            "weight_sum",
+        ):
             if not self.selected_layers:
                 raise ValueError(
                     "XLSR: selected_layers must be a non-empty sequence when "
@@ -83,7 +91,14 @@ class XLSR(nn.Module):
             self.cat_linear_head = nn.Linear(
                 self.hidden_size * n_sel, self.hidden_size
             )
-        elif lf == "cat_proj" and n_sel > 0:
+        elif lf == "cat_proj_v1" and n_sel > 0:
+            self.layer_proj = nn.Sequential(
+                nn.LayerNorm(self.hidden_size * n_sel),
+                nn.Linear(self.hidden_size * n_sel, self.hidden_size),
+                nn.GELU(),
+                nn.Dropout(0.1),
+            )
+        elif lf == "cat_proj_v2" and n_sel > 0:
             self.per_layer_ln = nn.ModuleList(
                 [nn.LayerNorm(self.hidden_size) for _ in range(n_sel)]
             )
@@ -108,7 +123,8 @@ class XLSR(nn.Module):
             if len(self.selected_layers) > 1:
                 raise ValueError(
                     "XLSR: layer_fusion='last' accepts at most one index in "
-                    "selected_layers; for multiple layers use cat_linear, cat_proj, "
+                    "selected_layers; for multiple layers use cat_linear, "
+                    "cat_proj_v1, cat_proj_v2, "
                     f"mean, or weight_sum. Got selected_layers={self.selected_layers!r}."
                 )
             idx = self.selected_layers[0]
@@ -136,7 +152,12 @@ class XLSR(nn.Module):
             fused = torch.cat(selected, dim=-1)
             fused = self.cat_linear_head(fused)
 
-        elif self.layer_fusion == "cat_proj":
+        elif self.layer_fusion == "cat_proj_v1":
+            # Concat [B,T,C*N] -> LN+Linear+GELU+Dropout -> [B,T,C]
+            fused = torch.cat(selected, dim=-1)
+            fused = self.layer_proj(fused)
+
+        elif self.layer_fusion == "cat_proj_v2":
             # Per-layer LN -> concat [B,T,C*N] -> project -> [B,T,C]
             normed = [
                 ln(h) for ln, h in zip(self.per_layer_ln, selected)
@@ -155,7 +176,8 @@ class XLSR(nn.Module):
         else:
             raise ValueError(
                 f"Unsupported layer_fusion={self.layer_fusion}. "
-                "Choose from ['last', 'cat_linear', 'cat_proj', 'mean', 'weight_sum']."
+                "Choose from ['last', 'cat_linear', 'cat_proj_v1', 'cat_proj_v2', "
+                "'mean', 'weight_sum']."
             )
 
         return fused, hidden_states

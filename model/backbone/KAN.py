@@ -32,7 +32,7 @@ import numpy as np
 
 
 import sys
-sys.path.insert(0, "/data/liulan/workspace/released_models/rational_kat_cu")
+sys.path.insert(0, "/home/new_disk/liulan/workspace/otherfiles/atadd3.10_gkgan_packages/rational_kat_cu")
 from kat_rational import KAT_Group
 
 
