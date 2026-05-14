@@ -18,11 +18,9 @@ from utils import config, metrics as em
 from utils.optimizer import disable_running_stats, enable_running_stats
 from model.model import build_model
 from utils.trainer import (
-    adjust_learning_rate,
     args_for_wandb,
     build_dataloaders,
     build_full_dev_loader,
-    build_model_and_optimizer,
 )
 from utils.helpers import parse_filter_types, setup_seed
 
@@ -130,15 +128,20 @@ def build_model_and_optimizer_xlsrbeats(args):
     beats_params = []
     other_params = []
     
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        if "xlsr" in name or "wav2vec2" in name:  # 根据你的模型命名调整
-            xlsr_params.append(param)
-        elif "beats" in name:
-            beats_params.append(param)
-        else:
-            other_params.append(param)
+    xlsr_params = list(model.frontend_a.parameters())
+    beats_params = list(model.frontend_b.parameters())
+    frontend_ids = set(id(p) for p in xlsr_params + beats_params)
+
+    other_params = [
+        p for p in model.parameters()
+        if id(p) not in frontend_ids
+]
+
+    print("\n=== PARAM GROUP SIZE CHECK ===")
+    print("xlsr_params:", len(xlsr_params))
+    print("beats_params:", len(beats_params))
+    print("other_params:", len(other_params))
+    print("==================================\n")
     
     # ── 差异化学习率 / weight_decay ──
     param_groups = [
@@ -200,6 +203,15 @@ def build_model_and_optimizer_xlsrbeats(args):
         criterion = nn.BCEWithLogitsLoss()
 
     return model, optimizer, criterion, resume_info
+
+def adjust_learning_rate_xlsrbeats(args, optimizer, epoch):
+    scale = args.lr_decay ** (epoch // args.interval)
+
+    for param_group in optimizer.param_groups:
+        if "initial_lr" not in param_group:
+            param_group["initial_lr"] = param_group["lr"]
+
+        param_group["lr"] = param_group["initial_lr"] * scale
 
 
 # ---------------------------------------------------------------------------
@@ -577,8 +589,8 @@ def train(args):
         model.train()
         train_losses = []
 
-        adjust_learning_rate(args, args.lr, optimizer, epoch)
-        current_lr = optimizer.param_groups[0]["lr"]
+        adjust_learning_rate_xlsrbeats(args, optimizer, epoch)
+        #current_lr = optimizer.param_groups[0]["lr"]
 
         for i, (feat, _, labels, class_types, _) in enumerate(
             tqdm(train_loader, leave=False, desc=f"epoch {epoch}")
@@ -636,7 +648,10 @@ def train(args):
             if use_wandb:
                 wandb.log(
                     {"train/batch_loss": train_losses[-1],
-                     "train/epoch": epoch, "train/lr": current_lr},
+                     "train/epoch": epoch, #"train/lr": current_lr},  current_lr = optimizer.param_groups[0]["lr"]
+                     "train/lr_xlsr": optimizer.param_groups[0]["lr"],
+                     "train/lr_beats": optimizer.param_groups[1]["lr"],
+                     "train/lr_other": optimizer.param_groups[2]["lr"]},
                     step=gs,
                 )
 

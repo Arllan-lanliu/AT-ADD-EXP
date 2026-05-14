@@ -137,7 +137,7 @@ class RoutedSSLASSIST(nn.Module):
         self.num_spoof_classes = num_spoof_classes
 
         self.router_xlsr = XLSR(
-            model_dir=xlsr_router_dir, device=device, freeze=True, visual=False
+            model_dir=xlsr_router_dir, device=device, freeze=freeze_router, visual=False
         )
         self.xlsr_ssl = XLSR(
             model_dir=xlsr_speech_dir, device=device, freeze=freeze_speech, visual=False
@@ -145,7 +145,7 @@ class RoutedSSLASSIST(nn.Module):
         self.beats_ssl = BEATs(model_dir=beats_dir, device=device, freeze=freeze_sound)
         self.xlsr_assist = AASIST(in_dim=1024)
         self.beats_assist = AASIST(in_dim=768)
-        _maybe_freeze(self.router_xlsr, True)
+        _maybe_freeze(self.router_xlsr, freeze_router)
         _maybe_freeze(self.xlsr_ssl, freeze_speech)
         _maybe_freeze(self.beats_ssl, freeze_sound)
 

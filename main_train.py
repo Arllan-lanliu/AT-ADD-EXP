@@ -55,7 +55,7 @@ def _aggregate_type_head_accuracy(
 
 # Dual-SSL / heavy multi-encoder models where AMP gives a meaningful speedup
 _AMP_MODELS = {
-    "ft-routed-ssl-aasist",
+    #"ft-routed-ssl-aasist",
     # "ft-xlsrwavlmaasist",
     # "ft-xlsrbeatsaasist",
     # "ft-xlsrmertaasist",

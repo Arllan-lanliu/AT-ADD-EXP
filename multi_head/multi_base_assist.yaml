@@ -1,0 +1,54 @@
+# Track-2 multi-head XLSR training
+
+data:
+  atadd_t2_train_audio: /data/liulan/workspace/dataset/at_add_track2/train
+  atadd_t2_train_label: /data/liulan/workspace/dataset/at_add_track2/labels/train.csv
+  atadd_t2_dev_audio: /data/liulan/workspace/dataset/at_add_track2/dev
+  atadd_t2_dev_label: /data/liulan/workspace/dataset/at_add_track2/labels/dev.csv
+  atadd_t2_eval_audio: /data/liulan/workspace/dataset/at_add_track2/eval
+
+ssl:
+  xlsr: /data/liulan/workspace/huggingface/wav2vec2-xls-r-300m
+  beats: /data/liulan/workspace/huggingface/BEATs_iter3
+
+ssl_backbone: xlsr_beats   # xlsr | beats | xlsr_beats (alias: dual); dual uses ssl.xlsr + ssl.beats + cat_linear
+
+# For fused dual-SSL experts, optional backbone_dim overrides fused AASIST in_dim (default 1024).
+train_task: atadd-track2
+
+# Routing loss weights
+specialist_weight: 0.05  # ← 降低，因为 music 数据少
+total_weight: 0.95       # ← 提高，让 total head 更强
+freeze_backbone: false
+
+filter_types:  # 留空表示使用所有类型
+out_fold: ./ckpt_t2_multi_head/mult_head_xslrbeats_assist_sp005_to095_sound08_singing02
+
+# Data augmentation (针对少数类)
+aug:
+  aug_speech: 0.0
+  aug_sound: 0.8
+  aug_singing: 0.2
+  aug_music: 0.0        # ← 只对 music 做增强，缓解数据不平衡
+  music_aug_method: spec_augment
+
+# Training
+num_epochs: 100
+batch_size: 24         
+lr: 0.000001           
+lr_decay: 0.5
+interval: 2           
+num_workers: 4
+seed: 1234
+audio_len: 64600
+continue_training: false
+
+# Evaluation
+eval_steps: 1000          
+full_eval_steps: 6000     
+eval_warmup_steps: 6000
+patience: 20
+save_best_by: f1
+eval_threshold_mode: fixed
+score_threshold: 0.5
+eval_strategy: total
