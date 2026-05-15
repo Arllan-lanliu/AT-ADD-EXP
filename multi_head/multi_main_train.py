@@ -7,6 +7,10 @@ Train / infer multi-head SSL (XLSR, BEATs, or XLSR+BEATs ``cat_linear`` dual).
 
     # Dual SSL: XLSR + BEATs fused with cat_linear (requires ssl.xlsr and ssl.beats)
     #   ssl_backbone: xlsr_beats   # or: dual
+    #
+    # Optional XLSR multi-layer readout (under ``ssl:``; ignored for ``ssl_backbone: beats``):
+    #   xlsr_selected_layers: [2, 11, 24]
+    #   xlsr_layer_fusion: cat_proj_v1   # last | cat_proj_v1 | cat_proj_v2 | cat_linear | mean | weight_sum
 
     python multi_head/multi_main_train.py infer \\
         --checkpoint PATH/best.pt --config multi_head/mult_config.yaml \\

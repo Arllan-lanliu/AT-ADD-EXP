@@ -43,6 +43,8 @@ class MultiHeadXLSR(nn.Module):
         *,
         beats_model_dir: Optional[str] = None,
         ssl_backbone: str = "xlsr",
+        xlsr_selected_layers: Optional[Any] = None,
+        xlsr_layer_fusion: str = "last",
     ) -> None:
         super().__init__()
         ssl_backbone = (ssl_backbone or "xlsr").strip().lower()
@@ -58,6 +60,8 @@ class MultiHeadXLSR(nn.Module):
                 device=device,
                 freeze=freeze_backbone,
                 visual=False,
+                selected_layers=xlsr_selected_layers,
+                layer_fusion=xlsr_layer_fusion,
             )
             dim = 1024 if backbone_dim is None else int(backbone_dim)
         elif ssl_backbone == "beats":
@@ -91,6 +95,8 @@ class MultiHeadXLSR(nn.Module):
         beats_model_dir: Optional[str] = None,
         freeze_backbone: bool = False,
         backbone_dim: Optional[int] = None,
+        xlsr_selected_layers: Optional[Any] = None,
+        xlsr_layer_fusion: str = "last",
     ) -> "MultiHeadXLSR":
         """Build from multi-head YAML fields: ``ssl_backbone``, ``ssl.xlsr`` / ``ssl.beats``."""
         ssl_backbone = (ssl_backbone or "xlsr").strip().lower()
@@ -117,17 +123,25 @@ class MultiHeadXLSR(nn.Module):
             raise ValueError(
                 "ssl_backbone='xlsr' requires xlsr_model_dir (set ssl.xlsr in YAML)."
             )
+        lf = str(xlsr_layer_fusion or "last").strip()
         print(
             f"[MultiHeadXLSR] backbone=XLSR dim={1024 if backbone_dim is None else backbone_dim} "
             f"path={xlsr_model_dir}",
             flush=True,
         )
+        if xlsr_selected_layers is not None or lf.lower() != "last":
+            print(
+                f"  xlsr_selected_layers={xlsr_selected_layers!r}  xlsr_layer_fusion={lf!r}",
+                flush=True,
+            )
         return cls(
             xlsr_model_dir=xlsr_model_dir,
             device=dev,
             backbone_dim=backbone_dim,
             freeze_backbone=freeze_backbone,
             ssl_backbone="xlsr",
+            xlsr_selected_layers=xlsr_selected_layers,
+            xlsr_layer_fusion=lf,
         )
 
     def encode_frames(self, wav: torch.Tensor) -> torch.Tensor:
@@ -193,6 +207,8 @@ class MultiHeadDualSSL(nn.Module):
         device: str = "cuda",
         freeze_backbone: bool = False,
         fused_expert_dim: int = 1024,
+        xlsr_selected_layers: Optional[Any] = None,
+        xlsr_layer_fusion: str = "last",
     ) -> None:
         super().__init__()
         from model.SSL import BEATs, XLSR
@@ -202,6 +218,8 @@ class MultiHeadDualSSL(nn.Module):
             device=device,
             freeze=freeze_backbone,
             visual=False,
+            selected_layers=xlsr_selected_layers,
+            layer_fusion=xlsr_layer_fusion,
         )
         self.frontend_b = BEATs(
             model_dir=beats_model_dir,
@@ -229,6 +247,8 @@ class MultiHeadDualSSL(nn.Module):
         beats_model_dir: Optional[str],
         freeze_backbone: bool,
         fused_dim: Optional[int] = None,
+        xlsr_selected_layers: Optional[Any] = None,
+        xlsr_layer_fusion: str = "last",
     ) -> "MultiHeadDualSSL":
         """XLSR + BEATs with ``cat_linear``; ``fused_dim`` is expert ``in_dim`` (default 1024)."""
         if not xlsr_model_dir:
@@ -237,6 +257,7 @@ class MultiHeadDualSSL(nn.Module):
             raise ValueError("MultiHeadDualSSL requires beats_model_dir (ssl.beats).")
         out_d = 1024 if fused_dim is None else int(fused_dim)
         dev = "cuda" if cuda else "cpu"
+        lf = str(xlsr_layer_fusion or "last").strip()
         print(
             f"[MultiHeadDualSSL] XLSR ({cls._DIM_XLSR}) + BEATs ({cls._DIM_BEATS}) "
             f"cat_linear → {out_d}d experts",
@@ -244,12 +265,19 @@ class MultiHeadDualSSL(nn.Module):
         )
         print(f"  xlsr:  {xlsr_model_dir}", flush=True)
         print(f"  beats: {beats_model_dir}", flush=True)
+        if xlsr_selected_layers is not None or lf.lower() != "last":
+            print(
+                f"  xlsr_selected_layers={xlsr_selected_layers!r}  xlsr_layer_fusion={lf!r}",
+                flush=True,
+            )
         return cls(
             xlsr_model_dir=xlsr_model_dir,
             beats_model_dir=beats_model_dir,
             device=dev,
             freeze_backbone=freeze_backbone,
             fused_expert_dim=out_d,
+            xlsr_selected_layers=xlsr_selected_layers,
+            xlsr_layer_fusion=lf,
         )
 
     @staticmethod
@@ -318,6 +346,8 @@ def build_mult_head_from_args(args: Any) -> Union[MultiHeadXLSR, MultiHeadDualSS
             beats_model_dir=getattr(args, "beats", None),
             freeze_backbone=bool(getattr(args, "freeze_backbone", False)),
             fused_dim=getattr(args, "backbone_dim", None),
+            xlsr_selected_layers=getattr(args, "xlsr_selected_layers", None),
+            xlsr_layer_fusion=getattr(args, "xlsr_layer_fusion", "last"),
         )
     return MultiHeadXLSR.from_mult_config(
         cuda=cuda,
@@ -326,6 +356,8 @@ def build_mult_head_from_args(args: Any) -> Union[MultiHeadXLSR, MultiHeadDualSS
         beats_model_dir=getattr(args, "beats", None),
         freeze_backbone=bool(getattr(args, "freeze_backbone", False)),
         backbone_dim=getattr(args, "backbone_dim", None),
+        xlsr_selected_layers=getattr(args, "xlsr_selected_layers", None),
+        xlsr_layer_fusion=getattr(args, "xlsr_layer_fusion", "last"),
     )
 
 
