@@ -101,6 +101,11 @@ class SSLConfig:
     # (YAML aliases ``cat`` / ``cat_proj`` normalize to cat_proj_v2 inside :class:`XLSR`.)
     xlsr_layer_fusion: str = "last"
 
+    # BEATs-only: hidden-state indices (0..encoder_layers); same fusion options as XLSR.
+    # 0 is the transformer input, 1..N are outputs after each BEATs transformer layer.
+    beats_selected_layers: Optional[List[int]] = None
+    beats_layer_fusion: str = "last"
+
 
 @dataclass
 class AugConfig:

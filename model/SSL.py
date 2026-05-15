@@ -530,16 +530,92 @@ class PT_MERT(nn.Module):
 
 
 class BEATs(nn.Module):
-    def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True):
+    def __init__(
+        self,
+        model_dir,
+        device='cuda',
+        sampling_rate=16000,
+        freeze=True,
+        return_hidden_states=False,
+        selected_layers=None,
+        layer_fusion="last",
+    ):
         super(BEATs, self).__init__()
 
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.sampling_rate = sampling_rate
         self.freeze = freeze
+        self.return_hidden_states = return_hidden_states
+        self.selected_layers = (
+            tuple(int(i) for i in selected_layers) if selected_layers is not None else None
+        )
 
         self.model = BEATsModel(
             cfg_path=f"{model_dir}/BEATs_iter3_plus_AS2M.pt"
         ).to(self.device)   # move to device at construction time
+
+        self.hidden_size = self.model.model.cfg.encoder_embed_dim
+        self.num_hidden_states = self.model.model.cfg.encoder_layers + 1
+
+        lf = str(layer_fusion).strip().lower()
+        if lf == "cat":
+            lf = "cat_proj_v2"
+        elif lf == "cat_proj":
+            lf = "cat_proj_v2"
+        self.layer_fusion = lf
+        if lf in (
+            "cat_linear",
+            "cat_proj_v1",
+            "cat_proj_v2",
+            "mean",
+            "weight_sum",
+        ):
+            if not self.selected_layers:
+                raise ValueError(
+                    "BEATs: selected_layers must be a non-empty sequence when "
+                    f"layer_fusion={lf!r}"
+                )
+        elif lf == "last" and self.selected_layers is not None:
+            if len(self.selected_layers) > 1:
+                raise ValueError(
+                    "BEATs: layer_fusion='last' accepts at most one "
+                    f"selected_layers index; got {self.selected_layers!r}"
+                )
+        elif lf != "last":
+            raise ValueError(
+                f"Unsupported BEATs layer_fusion={lf!r}. Choose from "
+                "['last', 'cat_linear', 'cat_proj_v1', 'cat_proj_v2', "
+                "'mean', 'weight_sum']."
+            )
+
+        n_sel = len(self.selected_layers) if self.selected_layers else 0
+        self.per_layer_ln = None
+        self.layer_proj = None
+        self.cat_linear_head = None
+        self.layer_weights = None
+
+        if lf == "cat_linear" and n_sel > 0:
+            self.cat_linear_head = nn.Linear(
+                self.hidden_size * n_sel, self.hidden_size
+            )
+        elif lf == "cat_proj_v1" and n_sel > 0:
+            self.layer_proj = nn.Sequential(
+                nn.LayerNorm(self.hidden_size * n_sel),
+                nn.Linear(self.hidden_size * n_sel, self.hidden_size),
+                nn.GELU(),
+                nn.Dropout(0.1),
+            )
+        elif lf == "cat_proj_v2" and n_sel > 0:
+            self.per_layer_ln = nn.ModuleList(
+                [nn.LayerNorm(self.hidden_size) for _ in range(n_sel)]
+            )
+            self.layer_proj = nn.Sequential(
+                nn.LayerNorm(self.hidden_size * n_sel),
+                nn.Linear(self.hidden_size * n_sel, self.hidden_size),
+                nn.Dropout(0.1),
+            )
+        elif lf == "weight_sum" and n_sel > 0:
+            self.layer_weights = nn.Parameter(torch.zeros(n_sel))
 
         if freeze:
             self.model.eval()
@@ -548,16 +624,79 @@ class BEATs(nn.Module):
         else:
             self.model.train()
 
+    def _fuse_hidden_states(self, last_hidden_state, hidden_states):
+        n_h = len(hidden_states)
+
+        if self.layer_fusion == "last":
+            if not self.selected_layers:
+                return last_hidden_state, hidden_states
+            idx = self.selected_layers[0]
+            if idx < 0 or idx >= n_h:
+                raise IndexError(
+                    f"BEATs selected_layers index {idx} out of range for "
+                    f"{n_h} hidden_states (valid 0..{n_h - 1})."
+                )
+            return hidden_states[idx], hidden_states
+
+        for i in self.selected_layers:
+            if i < 0 or i >= n_h:
+                raise IndexError(
+                    f"BEATs selected_layers index {i} out of range for "
+                    f"{n_h} hidden_states (valid 0..{n_h - 1})."
+                )
+
+        selected = [hidden_states[i] for i in self.selected_layers]
+
+        if self.layer_fusion == "cat_linear":
+            fused = torch.cat(selected, dim=-1)
+            fused = self.cat_linear_head(fused)
+        elif self.layer_fusion == "cat_proj_v1":
+            fused = torch.cat(selected, dim=-1)
+            fused = self.layer_proj(fused)
+        elif self.layer_fusion == "cat_proj_v2":
+            normed = [
+                ln(h) for ln, h in zip(self.per_layer_ln, selected)
+            ]
+            fused = torch.cat(normed, dim=-1)
+            fused = self.layer_proj(fused)
+        elif self.layer_fusion == "mean":
+            fused = torch.stack(selected, dim=0).mean(dim=0)
+        elif self.layer_fusion == "weight_sum":
+            weights = F.softmax(self.layer_weights, dim=0)
+            fused = sum(w * h for w, h in zip(weights, selected))
+        else:
+            raise ValueError(f"Unsupported BEATs layer_fusion={self.layer_fusion!r}")
+
+        return fused, hidden_states
+
     def extract_features(self, input_data):
         # input should be in shape (batch, length)
         if input_data.ndim == 3:
             input_tmp = input_data[:, :, 0]
         else:
             input_tmp = input_data
-            
+
+        need_hidden = self.return_hidden_states or self.selected_layers is not None
+        if need_hidden:
+            # BEATs hidden-state index convention matches XLSR here:
+            # 0 = encoder input, 1..N = outputs after transformer layers.
+            max_idx = (
+                max(self.selected_layers)
+                if self.selected_layers is not None
+                else self.num_hidden_states - 1
+            )
+            emb, hidden_states = self.model(
+                input_tmp,
+                tgt_layer=max_idx,
+                return_hidden_states=True,
+            )
+            emb, hidden_states = self._fuse_hidden_states(emb, hidden_states)
+            if self.return_hidden_states:
+                return emb, hidden_states
+            return emb
+
         # [batch, length, dim]
-        emb = self.model(input_tmp)
-        return emb
+        return self.model(input_tmp)
 
 
 class CLAP(nn.Module):

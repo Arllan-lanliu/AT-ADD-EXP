@@ -252,6 +252,14 @@ def _fusion(args) -> str:
     return getattr(args, 'fusion', 'cat_linear')
 
 
+def _beats_frontend_kw(args) -> dict:
+    """Kwargs for BEATs hidden-layer readout, mirroring XLSR's options."""
+    return {
+        "selected_layers": getattr(args, "beats_selected_layers", None),
+        "layer_fusion": getattr(args, "beats_layer_fusion", "last"),
+    }
+
+
 # ── Conventional CM ───────────────────────────────────────────────────────────
 
 @register_model('aasist')
@@ -320,7 +328,12 @@ def _build_ft_mertaasist(args):
 def _build_ft_beatsaasist(args):
     # BEATs encoder stays frozen; only the AASIST head is fine-tuned
     return SingleSSLModel(
-        frontend=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
+        frontend=BEATs(
+            model_dir=args.beats,
+            device=_dev(args),
+            freeze=False,
+            **_beats_frontend_kw(args),
+        ),
         backend=AASIST(in_dim=768),
     )
 
@@ -352,7 +365,12 @@ def _build_ft_xlsrbeatsaasist(args):
     # The --fusion argument is not applicable for this combination.
     return DualSSLModel(
         frontend_a=XLSR(model_dir=args.xlsr, device=_dev(args), freeze=False),
-        frontend_b=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
+        frontend_b=BEATs(
+            model_dir=args.beats,
+            device=_dev(args),
+            freeze=False,
+            **_beats_frontend_kw(args),
+        ),
         fusion_module=build_fusion_module(_fusion(args), 1024, 768, 1024),
         backend=AASIST(in_dim=1024),
     )
