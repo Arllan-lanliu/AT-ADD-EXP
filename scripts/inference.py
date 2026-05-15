@@ -142,6 +142,15 @@ def _init_args(argv=None):
         os.makedirs(result_dir, exist_ok=True)
         args.score_file = os.path.join(result_dir, f'{args.eval_task}_logits_eval.csv')
         args.binary_score_file = os.path.join(result_dir, f'{args.eval_task}_binary_eval.csv')
+    else:
+        # Caller supplied ``--score_file``; still expose ``binary_score_file`` for prints / gen_binary.
+        path = os.path.abspath(args.score_file)
+        stem, ext = os.path.splitext(path)
+        ext = ext or ".csv"
+        args.binary_score_file = f"{stem}_binary{ext}"
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
 
     if args.eval_threshold_mode is None:
         args.eval_threshold_mode = train_dict.get("eval_threshold_mode", "fixed")

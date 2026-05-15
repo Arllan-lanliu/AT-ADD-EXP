@@ -40,7 +40,7 @@ import dataclasses
 import os
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -90,15 +90,16 @@ class SSLConfig:
     """Paths to pre-trained SSL model directories / checkpoints."""
 
     xlsr:  str = "your_path_to_huggingface/wav2vec2-xls-r-300m"
-    """Default XLS-R / Wav2Vec2 path; used by most models."""
-    xlsr_type: Optional[str] = None
-    """For ``ft-vote-routed-aasist``: first XLS-R (type head). ``None`` → use ``xlsr``."""
-    xlsr_ss: Optional[str] = None
-    """For ``ft-vote-routed-aasist``: second, separate XLS-R for speech/singing branch. ``None`` → use ``xlsr``."""
     wavlm: str = "your_path_to_huggingface/wavlm-large"
     mert:  str = "your_path_to_huggingface/MERT-v1-330M"
     beats: str = "your_path_to_huggingface/BEATs_iter3"
     clap:  str = "your_path_to_huggingface/larger_clap_music_and_speech"
+
+    # XLSR-only: hidden-state indices (0..num_layers); required for multi-layer fusions.
+    xlsr_selected_layers: Optional[List[int]] = None
+    # last | cat_linear | cat_proj_v1 | cat_proj_v2 | mean | weight_sum
+    # (YAML aliases ``cat`` / ``cat_proj`` normalize to cat_proj_v2 inside :class:`XLSR`.)
+    xlsr_layer_fusion: str = "last"
 
 
 @dataclass
@@ -150,7 +151,6 @@ _VALID_EVAL_THRESHOLD_MODES = ("fixed", "eer")
 _VALID_FUSIONS     = (
     "cat_linear", "gated", "cross_attn", "film", "type_aware", "proj512_cat", "add"
 )
-_VALID_ROUTE_MODES = ("oracle", "pred")
 
 
 @dataclass
@@ -180,27 +180,11 @@ class ATADDConfig:
     ``None`` means all types."""
     type_loss_weight: float = 0.1
     """Weight of the auxiliary type-classification loss (fusion=type_aware only)."""
-    vote_use_gt_routing: bool = True
-    """For ``ft-vote-routed-aasist``: if True, train detection with GT coarse type for branch mixing; if False, use type-head argmax (hard)."""
-    route_mode_train: str = "oracle"
-    """For ``ft-routed-ssl-aasist``: ``oracle`` = GT route while training, ``pred`` = always argmax of type head."""
-    type_head_hidden: int = 256
-    type_head_dropout: float = 0.1
-    """Type MLP in ``RoutedSSLASSIST`` (``ft-routed-ssl-aasist``)."""
-    use_soft_routing: bool = True
-    """For ``ft-dual-ssl-router-aasist``: train with softmax-mixed XLSR/BEATs features; eval uses hard branch."""
-    classifier_hidden: int = 256
-    """Hidden dim of ``TypeClassifierAdaptivePool`` in ``ft-dual-ssl-router-aasist``."""
 
     # ── Training hyperparameters ─────────────────────────────────────────────
     num_epochs:        int   = 20
     batch_size:        int   = 24
     lr:                float = 0.000001
-    xlsr_lr:           float = 0.000001
-    beats_lr:          float = 0.000001
-    xlsr_weight_decay: float = 0.0005
-    beats_weight_decay: float = 0.0005
-    other_weight_decay: float = 0.0005
     lr_decay:          float = 0.5    # LR multiplied by lr_decay every `interval` epochs
     interval:          int   = 4      # epoch interval for LR decay
     beta_1:            float = 0.9
@@ -249,18 +233,12 @@ class ATADDConfig:
         _validate_choice(
             self.eval_threshold_mode, _VALID_EVAL_THRESHOLD_MODES, "eval_threshold_mode"
         )
-        _validate_choice(self.route_mode_train, _VALID_ROUTE_MODES, "route_mode_train")
 
         _validate_positive(self.audio_len,  "audio_len")
         _validate_positive(self.num_epochs, "num_epochs")
         _validate_positive(self.batch_size, "batch_size")
         _validate_positive(self.num_workers, "num_workers")
         _validate_range(self.lr,            1e-9, 1.0,  "lr")
-        _validate_range(self.xlsr_lr,       1e-9, 1.0,  "xlsr_lr")
-        _validate_range(self.beats_lr,      1e-9, 1.0,  "beats_lr")
-        _validate_range(self.xlsr_weight_decay,  0.0, 1.0, "xlsr_weight_decay")
-        _validate_range(self.beats_weight_decay, 0.0, 1.0, "beats_weight_decay")
-        _validate_range(self.other_weight_decay, 0.0, 1.0, "other_weight_decay")
         _validate_range(self.lr_decay,      0.0,  1.0,  "lr_decay")
         _validate_range(self.beta_1,        0.0,  1.0,  "beta_1")
         _validate_range(self.beta_2,        0.0,  1.0,  "beta_2")

@@ -308,7 +308,7 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     p.add_argument("--num_epochs", type=int, default=10)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
-    p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--eval_steps", type=int, default=500, help="0 disables mid-epoch eval on sampled dev.")
     p.add_argument("--full_eval_steps", type=int, default=0, help="0 disables periodic full-dev eval.")
     p.add_argument("--eval_warmup_steps", type=int, default=0)
@@ -318,7 +318,7 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     p.add_argument("--continue_training", action="store_true")
     # W&B
     p.add_argument("--no_wandb", action="store_true")
-    p.add_argument("--wandb_project", type=str, default="atadd-type-clf")
+    p.add_argument("--wandb_project", type=str, default="5090_type_classification")
     p.add_argument("--wandb_run_name", type=str, default="")
     p.add_argument("--wandb_mode", type=str, default="online", choices=("online", "offline", "disabled"))
 

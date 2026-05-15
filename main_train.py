@@ -27,35 +27,8 @@ from utils.helpers import parse_filter_types, setup_seed
 torch.set_default_tensor_type(torch.FloatTensor)
 torch.multiprocessing.set_start_method("spawn", force=True)
 
-_FINE_TYPE_NAMES = ("speech", "sound", "singing", "music")
-
-
-def _aggregate_type_head_accuracy(
-    pred_np: np.ndarray,
-    true_np: np.ndarray,
-    fine_np: np.ndarray,
-    n_cls: int,
-) -> dict:
-    """Overall and per fine audio-type (speech/sound/singing/music) type-head accuracy."""
-    ok = pred_np == true_np
-    out = {
-        "n_classes": int(n_cls),
-        "overall": float(np.mean(ok)),
-        "per_fine": {},
-    }
-    for u in range(4):
-        m = fine_np == u
-        name = _FINE_TYPE_NAMES[u]
-        if not np.any(m):
-            out["per_fine"][name] = float("nan")
-        else:
-            out["per_fine"][name] = float(np.mean(ok[m]))
-    return out
-
-
-# Dual-SSL / heavy multi-encoder models where AMP gives a meaningful speedup
+# Dual-SSL model keys where AMP gives a meaningful speedup
 _AMP_MODELS = {
-    #"ft-routed-ssl-aasist",
     # "ft-xlsrwavlmaasist",
     # "ft-xlsrbeatsaasist",
     # "ft-xlsrmertaasist",
@@ -163,12 +136,6 @@ def train(args):
     scaler       = GradScaler(enabled=amp_enabled)
     print(f"AMP: {amp_enabled}")
 
-    def _forward(feat_in, class_types_tensor=None):
-        """Routed models (e.g. ``ft-vote-routed-aasist``) need dev type labels while training."""
-        if getattr(model, "use_class_types", False):
-            return model(feat_in, class_types_tensor)
-        return model(feat_in)
-
     use_wandb = not args.no_wandb
     if use_wandb:
         run_name = args.wandb_run_name or os.path.basename(
@@ -191,13 +158,12 @@ def train(args):
         """Run the model over *loader* and return aggregated eval metrics."""
         model.eval()
         loss_list, score_list, label_list, type_list = [], [], [], []
-        type_clf_chunks = []  # (pred, true, fine) numpy pieces when ``_last_type_logits`` exists
         with torch.no_grad():
             for feat, _, labels, class_types, _ in tqdm(loader, leave=False, desc="eval"):
                 feat   = feat.to(args.device, non_blocking=True)
                 labels = labels.to(args.device, non_blocking=True)
                 with autocast(enabled=amp_enabled):
-                    _, outputs = _forward(feat, class_types)
+                    _, outputs = model(feat)
                 if args.base_loss == "bce":
                     loss  = criterion(outputs, labels.unsqueeze(1).float())
                     score = torch.sigmoid(outputs[:, 0])
@@ -209,32 +175,10 @@ def train(args):
                 label_list.append(labels)
                 type_list.append(class_types)
 
-                lt = getattr(model, "_last_type_logits", None)
-                if lt is not None and lt.numel() > 0:
-                    n_cls = int(lt.size(1))
-                    pred = lt.argmax(1).detach().cpu().numpy()
-                    fine = class_types.detach().cpu().numpy()
-                    if n_cls == 2:
-                        true_ = ((fine == 1) | (fine == 3)).astype(np.int64)
-                    elif n_cls == 4:
-                        true_ = fine.astype(np.int64)
-                    else:
-                        true_ = fine.astype(np.int64)
-                    type_clf_chunks.append((pred, true_, fine, n_cls))
-
         val_loss  = float(np.nanmean(loss_list))
         scores    = torch.cat(score_list).cpu().numpy()
         labels_np = torch.cat(label_list).cpu().numpy()
         types     = torch.cat(type_list).cpu().numpy()
-
-        if type_clf_chunks:
-            n_cls0 = type_clf_chunks[0][3]
-            pred_a  = np.concatenate([c[0] for c in type_clf_chunks])
-            true_a  = np.concatenate([c[1] for c in type_clf_chunks])
-            fine_a  = np.concatenate([c[2] for c in type_clf_chunks])
-            type_clf_metrics = _aggregate_type_head_accuracy(pred_a, true_a, fine_a, n_cls0)
-        else:
-            type_clf_metrics = None
 
         real_sc = scores[labels_np == 0]
         fake_sc = scores[labels_np == 1]
@@ -259,33 +203,13 @@ def train(args):
                         else em.compute_eer(ts[tl == 0], ts[tl == 1])[0]),
                 "f1":  f1_score(tl, tp, average="macro"),
             }
-        return val_loss, val_eer, val_f1, type_metrics, float(thr), type_clf_metrics
+        return val_loss, val_eer, val_f1, type_metrics, float(thr)
 
-    def _log_metrics(
-        log_filename,
-        tag,
-        global_step,
-        val_loss,
-        val_eer,
-        val_f1,
-        type_metrics,
-        type_clf_metrics=None,
-    ):
+    def _log_metrics(log_filename, tag, global_step, val_loss, val_eer, val_f1, type_metrics):
         with open(os.path.join(args.log_dir, log_filename), "a") as f:
             f.write(f"{global_step}\t{tag}\t{val_loss:.6f}\t{val_eer:.6f}\t{val_f1:.6f}")
             for t, m in type_metrics.items():
                 f.write(f"\t{t}_EER:{m['eer']:.4f}\t{t}_F1:{m['f1']:.4f}")
-            if type_clf_metrics is not None:
-                f.write(
-                    f"\ttype_clf_ncls:{type_clf_metrics['n_classes']}"
-                    f"\ttype_clf_overall:{type_clf_metrics['overall']:.4f}"
-                )
-                for name, v in type_clf_metrics["per_fine"].items():
-                    if isinstance(v, float) and np.isnan(v):
-                        acc_s = "nan"
-                    else:
-                        acc_s = f"{v:.4f}"
-                    f.write(f"\ttype_clf_{name}:{acc_s}")
             f.write("\n")
 
     def _update_top3_sample(val_loss, val_eer, val_f1, global_step):
@@ -329,20 +253,9 @@ def train(args):
 
         tag = f"{epoch}.{global_step}"
         t0  = time.time()
-        val_loss, val_eer, val_f1, type_metrics, decision_thr, type_clf_metrics = (
-            _run_inference(val_loader)
-        )
+        val_loss, val_eer, val_f1, type_metrics, decision_thr = _run_inference(val_loader)
 
-        _log_metrics(
-            "dev_loss.log",
-            tag,
-            global_step,
-            val_loss,
-            val_eer,
-            val_f1,
-            type_metrics,
-            type_clf_metrics,
-        )
+        _log_metrics("dev_loss.log", tag, global_step, val_loss, val_eer, val_f1, type_metrics)
 
         if use_wandb:
             wb = {"sample_eval/loss": val_loss, "sample_eval/eer": val_eer,
@@ -350,13 +263,6 @@ def train(args):
             for t, m in type_metrics.items():
                 wb[f"sample_eval/{t}/eer"] = m["eer"]
                 wb[f"sample_eval/{t}/f1"]  = m["f1"]
-            if type_clf_metrics is not None:
-                wb["sample_eval/type_clf/overall_acc"] = type_clf_metrics["overall"]
-                wb["sample_eval/type_clf/n_classes"] = type_clf_metrics["n_classes"]
-                for name, v in type_clf_metrics["per_fine"].items():
-                    if isinstance(v, float) and np.isnan(v):
-                        continue
-                    wb[f"sample_eval/type_clf/{name}_acc"] = v
             wandb.log(wb, step=global_step)
 
         print(f"\n[SampleEval @ {tag}]  loss={val_loss:.4f}  EER={val_eer:.4f}"
@@ -364,16 +270,6 @@ def train(args):
               f"  ({(time.time()-t0)/60:.1f} min)")
         for t, m in type_metrics.items():
             print(f"  [{t}]  EER={m['eer']:.4f}  F1={m['f1']:.4f}")
-        if type_clf_metrics is not None:
-            nc = type_clf_metrics["n_classes"]
-            oa = type_clf_metrics["overall"]
-            print(f"  [Type head]  ncls={nc}  overall_acc={oa:.4f}")
-            for name in _FINE_TYPE_NAMES:
-                v = type_clf_metrics["per_fine"].get(name, float("nan"))
-                if isinstance(v, float) and np.isnan(v):
-                    print(f"    {name}:  acc=n/a (no samples)")
-                else:
-                    print(f"    {name}:  acc={v:.4f}")
 
         # Top-3 by save_best_by in checkpoint_sample_dev/
         _update_top3_sample(val_loss, val_eer, val_f1, global_step)
@@ -420,20 +316,10 @@ def train(args):
 
         tag = f"{epoch}.{global_step}"
         t0  = time.time()
-        val_loss, val_eer, val_f1, type_metrics, decision_thr, type_clf_metrics = (
-            _run_inference(full_val_loader)
-        )
+        val_loss, val_eer, val_f1, type_metrics, decision_thr = _run_inference(full_val_loader)
 
-        _log_metrics(
-            "all_dev_loss.log",
-            tag,
-            global_step,
-            val_loss,
-            val_eer,
-            val_f1,
-            type_metrics,
-            type_clf_metrics,
-        )
+        _log_metrics("all_dev_loss.log", tag, global_step,
+                     val_loss, val_eer, val_f1, type_metrics)
 
         if use_wandb:
             wb = {"full_eval/loss": val_loss, "full_eval/eer": val_eer,
@@ -441,13 +327,6 @@ def train(args):
             for t, m in type_metrics.items():
                 wb[f"full_eval/{t}/eer"] = m["eer"]
                 wb[f"full_eval/{t}/f1"]  = m["f1"]
-            if type_clf_metrics is not None:
-                wb["full_eval/type_clf/overall_acc"] = type_clf_metrics["overall"]
-                wb["full_eval/type_clf/n_classes"] = type_clf_metrics["n_classes"]
-                for name, v in type_clf_metrics["per_fine"].items():
-                    if isinstance(v, float) and np.isnan(v):
-                        continue
-                    wb[f"full_eval/type_clf/{name}_acc"] = v
             wandb.log(wb, step=global_step)
 
         print(f"\n[FullEval  @ {tag}]  loss={val_loss:.4f}  EER={val_eer:.4f}"
@@ -455,16 +334,6 @@ def train(args):
               f"  ({(time.time()-t0)/60:.1f} min)")
         for t, m in type_metrics.items():
             print(f"  [{t}]  EER={m['eer']:.4f}  F1={m['f1']:.4f}")
-        if type_clf_metrics is not None:
-            nc = type_clf_metrics["n_classes"]
-            oa = type_clf_metrics["overall"]
-            print(f"  [Type head]  ncls={nc}  overall_acc={oa:.4f}")
-            for name in _FINE_TYPE_NAMES:
-                v = type_clf_metrics["per_fine"].get(name, float("nan"))
-                if isinstance(v, float) and np.isnan(v):
-                    print(f"    {name}:  acc=n/a (no samples)")
-                else:
-                    print(f"    {name}:  acc={v:.4f}")
 
         # Save best model by save_best_by in checkpoint_all_dev/
         cur_val = _metric_val(val_loss, val_eer, val_f1)
@@ -498,19 +367,15 @@ def train(args):
             def _loss_with_type(base_loss):
                 type_logits = getattr(model, "_last_type_logits", None)
                 if type_logits is not None and args.type_loss_weight > 0:
-                    if type_logits.size(1) == 2:
-                        # speech/singing vs sound/music (``ft-vote-routed-aasist``)
-                        tgt = ((class_types == 1) | (class_types == 3)).long()
-                        tloss = F.cross_entropy(type_logits, tgt)
-                    else:
-                        tloss = F.cross_entropy(type_logits, class_types)
-                    return base_loss + args.type_loss_weight * tloss
+                    return base_loss + args.type_loss_weight * F.cross_entropy(
+                        type_logits, class_types
+                    )
                 return base_loss
 
             if args.SAM or args.ASAM or args.CSAM:
                 enable_running_stats(model)
                 with autocast(enabled=amp_enabled):
-                    _, out = _forward(feat, class_types)
+                    _, out = model(feat)
                     loss = _loss_with_type(criterion(out, labels))
                 scaler.scale(loss.mean()).backward()
                 if amp_enabled:
@@ -519,7 +384,7 @@ def train(args):
 
                 disable_running_stats(model)
                 with autocast(enabled=amp_enabled):
-                    _, out2 = _forward(feat, class_types)
+                    _, out2 = model(feat)
                     loss2 = _loss_with_type(criterion(out2, labels))
                 scaler.scale(loss2.mean()).backward()
                 if amp_enabled:
@@ -529,12 +394,12 @@ def train(args):
             else:
                 optimizer.zero_grad()
                 with autocast(enabled=amp_enabled):
-                    _, out = _forward(feat, class_types)
+                    _, out = model(feat)
                     loss = _loss_with_type(criterion(out, labels))
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
-                
+
             train_losses.append(loss.item())
             global_step = epoch * n_batches + i
             gs = global_step + 1   # 1-indexed
