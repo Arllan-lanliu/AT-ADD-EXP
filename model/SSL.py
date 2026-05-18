@@ -528,21 +528,55 @@ class PT_MERT(nn.Module):
         # Process the input audio and extract the features using the forward pass
         return self.forward(audio_data)  # Return the final layer's output
 
+"""
+BEATs front-end with multiple layer-fusion strategies, including two
+MHFA-style variants:
+
+* ``mhfa_fuse``  : Frame-level MHFA-style fusion. Two independent learnable
+                   layer-weight streams (K and V), softmax-normalised, produce
+                   K_feat and V_feat in (B, T, D). They are then projected and
+                   combined back to a single (B, T, D) tensor for the downstream
+                   AASIST (or any frame-level back-end). This is NOT the
+                   utterance-level MHFA from the paper — it's the MHFA layer-
+                   weighting idea applied while preserving the time dimension.
+
+* ``mhfa_pool``  : Faithful re-implementation of MHFA from Peng et al. 2022
+                   (BUT). Output is utterance-level (B, D_out). To use this, the
+                   downstream model must NOT be a frame-level network like
+                   AASIST — replace it with a simple classifier (Linear/MLP) or
+                   wrap AASIST to broadcast the utterance embedding back to a
+                   length-1 sequence. Adapt your wrapper accordingly.
+
+References:
+  - Peng et al. "An Attention-Based Backend Allowing Efficient Fine-Tuning of
+    Transformer Models for Speaker Verification", 2022.
+  - BUT WildSpoof submission, arXiv 2512.12851 (clean formula statement).
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 
 class BEATs(nn.Module):
     def __init__(
         self,
         model_dir,
-        device='cuda',
+        device="cuda",
         sampling_rate=16000,
         freeze=True,
         return_hidden_states=False,
         selected_layers=None,
         layer_fusion="last",
+        # ── MHFA-specific kwargs (only used if layer_fusion in {mhfa_fuse, mhfa_pool}) ──
+        mhfa_compression_dim=None,   # D_cmp; default = hidden_size // 4
+        mhfa_num_heads=8,            # H; only used by mhfa_pool
+        mhfa_output_dim=None,        # D_out for mhfa_pool; default = hidden_size
+        mhfa_dropout=0.1,
     ):
         super(BEATs, self).__init__()
 
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.sampling_rate = sampling_rate
         self.freeze = freeze
         self.return_hidden_states = return_hidden_states
@@ -552,24 +586,29 @@ class BEATs(nn.Module):
 
         self.model = BEATsModel(
             cfg_path=f"{model_dir}/BEATs_iter3_plus_AS2M.pt"
-        ).to(self.device)   # move to device at construction time
+        ).to(self.device)
 
         self.hidden_size = self.model.model.cfg.encoder_embed_dim
         self.num_hidden_states = self.model.model.cfg.encoder_layers + 1
 
+        # Normalise layer_fusion string
         lf = str(layer_fusion).strip().lower()
         if lf == "cat":
             lf = "cat_proj_v2"
         elif lf == "cat_proj":
             lf = "cat_proj_v2"
         self.layer_fusion = lf
-        if lf in (
+
+        _multi_layer_fusions = {
             "cat_linear",
             "cat_proj_v1",
             "cat_proj_v2",
             "mean",
             "weight_sum",
-        ):
+            "mhfa_fuse",
+            "mhfa_pool",
+        }
+        if lf in _multi_layer_fusions:
             if not self.selected_layers:
                 raise ValueError(
                     "BEATs: selected_layers must be a non-empty sequence when "
@@ -585,14 +624,27 @@ class BEATs(nn.Module):
             raise ValueError(
                 f"Unsupported BEATs layer_fusion={lf!r}. Choose from "
                 "['last', 'cat_linear', 'cat_proj_v1', 'cat_proj_v2', "
-                "'mean', 'weight_sum']."
+                "'mean', 'weight_sum', 'mhfa_fuse', 'mhfa_pool']."
             )
 
         n_sel = len(self.selected_layers) if self.selected_layers else 0
+
+        # Existing modules (unchanged)
         self.per_layer_ln = None
         self.layer_proj = None
         self.cat_linear_head = None
         self.layer_weights = None
+
+        # ── MHFA modules (new) ──
+        self.mhfa_w_k = None  # layer weights for K stream (shape: n_sel)
+        self.mhfa_w_v = None  # layer weights for V stream
+        self.mhfa_proj_k = None  # linear D -> D_cmp on K_feat
+        self.mhfa_proj_v = None  # linear D -> D_cmp on V_feat
+        # mhfa_fuse only:
+        self.mhfa_fuse_out = None  # D_cmp -> D, brings K*V back to hidden_size
+        # mhfa_pool only:
+        self.mhfa_query = None     # learnable queries, shape (H, D_cmp)
+        self.mhfa_head_proj = None  # H*D_cmp -> D_out
 
         if lf == "cat_linear" and n_sel > 0:
             self.cat_linear_head = nn.Linear(
@@ -617,12 +669,122 @@ class BEATs(nn.Module):
         elif lf == "weight_sum" and n_sel > 0:
             self.layer_weights = nn.Parameter(torch.zeros(n_sel))
 
+        elif lf in ("mhfa_fuse", "mhfa_pool") and n_sel > 0:
+            D = self.hidden_size
+            D_cmp = mhfa_compression_dim if mhfa_compression_dim is not None else D // 4
+
+            # Two independent layer-weight streams. Init at 0 so softmax = uniform.
+            self.mhfa_w_k = nn.Parameter(torch.zeros(n_sel))
+            self.mhfa_w_v = nn.Parameter(torch.zeros(n_sel))
+
+            # Compression projections: D -> D_cmp
+            self.mhfa_proj_k = nn.Linear(D, D_cmp, bias=False)
+            self.mhfa_proj_v = nn.Linear(D, D_cmp, bias=False)
+            self.mhfa_dropout = nn.Dropout(mhfa_dropout)
+
+            if lf == "mhfa_fuse":
+                # Frame-level: bring K*V interaction back to hidden_size for AASIST
+                # Output stays (B, T, D)
+                self.mhfa_fuse_out = nn.Sequential(
+                    nn.LayerNorm(D_cmp),
+                    nn.Linear(D_cmp, D),
+                )
+
+            else:  # mhfa_pool: faithful MHFA, outputs utterance-level (B, D_out)
+                H = int(mhfa_num_heads)
+                D_out = mhfa_output_dim if mhfa_output_dim is not None else D
+                self.mhfa_num_heads = H
+                self.mhfa_compression_dim = D_cmp
+                self.mhfa_output_dim = D_out
+
+                # Learnable per-head queries; one query vector per head
+                self.mhfa_query = nn.Parameter(torch.randn(H, D_cmp) * (D_cmp ** -0.5))
+                # Output projection: concat of H heads (each D_cmp) -> D_out
+                self.mhfa_head_proj = nn.Linear(H * D_cmp, D_out)
+
         if freeze:
             self.model.eval()
             for param in self.model.parameters():
                 param.requires_grad = False
         else:
             self.model.train()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # MHFA helpers
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _mhfa_layer_weighted_sums(self, selected):
+        """Compute K_feat and V_feat — the two layer-weighted sums.
+
+        Args:
+            selected: list of L tensors, each (B, T, D)
+
+        Returns:
+            K_feat, V_feat : both (B, T, D)
+        """
+        # Stack along a new "layer" dimension -> (B, T, D, L)
+        stack = torch.stack(selected, dim=-1)
+
+        # Softmax over the L axis to get per-layer weights, then weighted sum.
+        w_k = F.softmax(self.mhfa_w_k, dim=0)   # (L,)
+        w_v = F.softmax(self.mhfa_w_v, dim=0)   # (L,)
+
+        # (B, T, D, L) * (L,) -> sum over L -> (B, T, D)
+        K_feat = (stack * w_k).sum(dim=-1)
+        V_feat = (stack * w_v).sum(dim=-1)
+        return K_feat, V_feat
+
+    def _mhfa_fuse_forward(self, selected):
+        """Frame-level MHFA-style fusion.
+
+        K_feat and V_feat are projected to D_cmp; their element-wise product
+        (a soft gating between "where to attend" and "what to keep") is then
+        lifted back to D. Time dimension is preserved.
+
+        Output: (B, T, D)
+        """
+        K_feat, V_feat = self._mhfa_layer_weighted_sums(selected)  # (B, T, D) each
+        K = self.mhfa_proj_k(K_feat)   # (B, T, D_cmp)
+        V = self.mhfa_proj_v(V_feat)   # (B, T, D_cmp)
+
+        # Soft gating: K acts as per-time selector for V's content channels.
+        gate = torch.sigmoid(K)
+        gated = gate * V               # (B, T, D_cmp)
+        gated = self.mhfa_dropout(gated)
+
+        fused = self.mhfa_fuse_out(gated)  # (B, T, D)
+        return fused
+
+    def _mhfa_pool_forward(self, selected):
+        """Faithful MHFA from Peng et al. 2022.
+
+        Output: (B, D_out) — utterance-level embedding.
+        WARNING: incompatible with frame-level back-ends like AASIST.
+        """
+        K_feat, V_feat = self._mhfa_layer_weighted_sums(selected)  # (B, T, D) each
+        K = self.mhfa_proj_k(K_feat)   # (B, T, D_cmp)
+        V = self.mhfa_proj_v(V_feat)   # (B, T, D_cmp)
+
+        # Multi-head attentive pooling.
+        # K: (B, T, D_cmp); queries: (H, D_cmp).
+        # Scores: (B, H, T) = einsum("btd, hd -> bht", K, q) / sqrt(D_cmp)
+        D_cmp = K.size(-1)
+        scores = torch.einsum("btd,hd->bht", K, self.mhfa_query) / (D_cmp ** 0.5)
+        attn = F.softmax(scores, dim=-1)  # (B, H, T) — over time per head
+
+        # Weighted sum of V per head: (B, H, T) x (B, T, D_cmp) -> (B, H, D_cmp)
+        head_out = torch.einsum("bht,btd->bhd", attn, V)
+        head_out = self.mhfa_dropout(head_out)
+
+        # Concat heads and project
+        B, H, Dc = head_out.shape
+        head_out = head_out.reshape(B, H * Dc)
+        pooled = self.mhfa_head_proj(head_out)  # (B, D_out)
+        return pooled
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Existing fusion dispatcher
+    # ──────────────────────────────────────────────────────────────────────
 
     def _fuse_hidden_states(self, last_hidden_state, hidden_states):
         n_h = len(hidden_states)
@@ -654,9 +816,7 @@ class BEATs(nn.Module):
             fused = torch.cat(selected, dim=-1)
             fused = self.layer_proj(fused)
         elif self.layer_fusion == "cat_proj_v2":
-            normed = [
-                ln(h) for ln, h in zip(self.per_layer_ln, selected)
-            ]
+            normed = [ln(h) for ln, h in zip(self.per_layer_ln, selected)]
             fused = torch.cat(normed, dim=-1)
             fused = self.layer_proj(fused)
         elif self.layer_fusion == "mean":
@@ -664,13 +824,21 @@ class BEATs(nn.Module):
         elif self.layer_fusion == "weight_sum":
             weights = F.softmax(self.layer_weights, dim=0)
             fused = sum(w * h for w, h in zip(weights, selected))
+        elif self.layer_fusion == "mhfa_fuse":
+            fused = self._mhfa_fuse_forward(selected)
+        # elif self.layer_fusion == "mhfa_pool":
+        #     fused = self._mhfa_pool_forward(selected)
+            # NOTE: shape is (B, D_out), NOT (B, T, D). Caller must handle.
         else:
             raise ValueError(f"Unsupported BEATs layer_fusion={self.layer_fusion!r}")
 
         return fused, hidden_states
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Public API (unchanged)
+    # ──────────────────────────────────────────────────────────────────────
+
     def extract_features(self, input_data):
-        # input should be in shape (batch, length)
         if input_data.ndim == 3:
             input_tmp = input_data[:, :, 0]
         else:
@@ -678,8 +846,6 @@ class BEATs(nn.Module):
 
         need_hidden = self.return_hidden_states or self.selected_layers is not None
         if need_hidden:
-            # BEATs hidden-state index convention matches XLSR here:
-            # 0 = encoder input, 1..N = outputs after transformer layers.
             max_idx = (
                 max(self.selected_layers)
                 if self.selected_layers is not None
@@ -695,7 +861,6 @@ class BEATs(nn.Module):
                 return emb, hidden_states
             return emb
 
-        # [batch, length, dim]
         return self.model(input_tmp)
 
 
