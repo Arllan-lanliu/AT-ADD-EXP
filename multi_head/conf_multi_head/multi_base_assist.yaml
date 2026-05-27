@@ -1,21 +1,21 @@
 # Track-2 multi-head XLSR training
 
 data:
-  atadd_t2_train_audio: /data/liulan/workspace/dataset/at_add_track2/train
-  atadd_t2_train_label: /data/liulan/workspace/dataset/at_add_track2/labels/train.csv
-  atadd_t2_dev_audio: /data/liulan/workspace/dataset/at_add_track2/dev
-  atadd_t2_dev_label: /data/liulan/workspace/dataset/at_add_track2/labels/dev.csv
-  atadd_t2_eval_audio: /data/liulan/workspace/dataset/at_add_track2/eval
+  atadd_t2_train_audio: /root/autodl-fs/track2/AT-ADD_T2_train.tar
+  atadd_t2_train_label: /root/autodl-fs/track2/label/train.csv
+  atadd_t2_dev_audio: /root/autodl-fs/track2/AT-ADD_T2_dev.tar
+  atadd_t2_dev_label: /root/autodl-fs/track2/label/dev.csv
+  atadd_t2_eval_audio: /root/autodl-fs/track2/eval
 
 ssl:
-  xlsr: /data/liulan/workspace/huggingface/wav2vec2-xls-r-300m
-  beats: /data/liulan/workspace/huggingface/BEATs_iter3
+  xlsr: /root/autodl-fs/models/wav2vec2-xls-r-300m
+  beats: /root/autodl-fs/models/BEATs_iter3
   # XLSR multi-layer readout (optional; only affects the XLSR branch):
   xlsr_selected_layers: [3, 11, 24]
   xlsr_layer_fusion: cat_proj_v1   # last | cat_proj_v1 | cat_proj_v2 | cat_linear | mean | weight_sum
   # BEATs multi-layer readout (optional; 0=encoder input, 1..12=transformer layers):
-  # beats_selected_layers: [3, 7, 12]
-  # beats_layer_fusion: cat_proj_v1   # last | cat_proj_v1 | cat_proj_v2 | cat_linear | mean | weight_sum
+  beats_selected_layers: [3, 6, 9]
+  beats_layer_fusion: cat_proj_v1   # last | cat_proj_v1 | cat_proj_v2 | cat_linear | mean | weight_sum
 
 ssl_backbone: xlsr_beats   # xlsr | beats | xlsr_beats (alias: dual); dual uses ssl.xlsr + ssl.beats + cat_linear
 
@@ -35,7 +35,7 @@ aug:
   aug_speech: 0.0
   aug_sound: 0.8
   aug_singing: 0.2
-  aug_music: 0.0        # ← 只对 music 做增强，缓解数据不平衡
+  aug_music: 0.0       
   music_aug_method: spec_augment
 
 # Training
