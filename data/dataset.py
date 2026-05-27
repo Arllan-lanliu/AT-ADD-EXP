@@ -44,6 +44,76 @@ def pad_dataset(wav, audio_length=64600):
     return waveform
 
 
+# ── Multi-crop strategy boundaries (samples at 16 kHz) ───────────────────────
+_CROP_B2     = 96000   # 6 s   — boundary between 2-crop and sliding-window
+_CROP_B3     = 168000  # 10.5 s — boundary between sliding-window and evenly-spaced
+_CROP_STEP   = 32000   # 2 s   — sliding-window step
+_CROP_N_EVN  = 5       # number of crops for very long audio (> 10.5 s)
+
+
+def _audio_num_samples_from_file(filepath_or_buf, target_sr: int = 16000) -> int:
+    """Return approximate sample count after resampling to *target_sr*.
+
+    Uses soundfile header-only read when possible; falls back to full librosa
+    decode for unsupported formats (e.g. mp3).
+    """
+    try:
+        import soundfile as _sf
+        info = _sf.info(filepath_or_buf)
+        return int(np.ceil(info.frames * target_sr / info.samplerate))
+    except Exception:
+        wave, _ = librosa.load(filepath_or_buf, sr=target_sr)
+        return len(wave)
+
+
+def get_crop_starts(waveform_len: int, audio_length: int = 64600) -> list:
+    """Return crop-start positions (in samples) for *waveform_len*.
+
+    Crop strategy:
+      ≤ audio_length (4.04 s)      → [0]              (single crop; repeat-pad)
+      audio_length … 6 s           → [0, end]          (start + end)
+      6 s … 10.5 s                 → sliding window every 2 s, force end crop
+      > 10.5 s                     → 5 evenly-spaced crops
+    """
+    if waveform_len <= audio_length:
+        return [0]
+
+    end_start = waveform_len - audio_length
+
+    if waveform_len <= _CROP_B2:                  # 4.04 s – 6 s
+        return [0, end_start]
+
+    if waveform_len <= _CROP_B3:                  # 6 s – 10.5 s  (sliding window)
+        starts = list(range(0, end_start, _CROP_STEP))
+        if not starts or starts[-1] != end_start:
+            starts.append(end_start)
+        return starts
+
+    # > 10.5 s: evenly spaced
+    return [round(i * end_start / (_CROP_N_EVN - 1)) for i in range(_CROP_N_EVN)]
+
+
+def _crop_waveform(wav, start: int, audio_length: int = 64600) -> torch.Tensor:
+    """Extract one crop at *start* and apply mean/var normalisation.
+
+    Handles repeat-pad for short audio (len ≤ audio_length; start expected = 0).
+    Accepts torch.Tensor (1-D or [1, T]) or numpy array.
+    """
+    if isinstance(wav, np.ndarray):
+        wav = torch.from_numpy(wav.astype(np.float32))
+    waveform = wav.squeeze(0)
+    n = waveform.shape[0]
+
+    if n <= audio_length:
+        num_repeats = int(audio_length / n) + 1
+        waveform = torch.tile(waveform, (1, num_repeats))[:, :audio_length][0]
+    else:
+        waveform = waveform[start: start + audio_length]
+
+    waveform = (waveform - waveform.mean()) / torch.sqrt(waveform.var() + 1e-7)
+    return waveform
+
+
 VALID_AUDIO_TYPES = frozenset({"speech", "sound", "music", "singing"})
 
 
@@ -54,7 +124,8 @@ class atadd_dataset(Dataset):
                  aug_probs=None,
                  music_aug_method="spec_augment",
                  dev_subsample=False,
-                 dev_subsample_seed=42):
+                 dev_subsample_seed=42,
+                 multi_crop=False):
         """
         Args:
             aug_probs: dict mapping audio type → augmentation probability, e.g.
@@ -74,6 +145,10 @@ class atadd_dataset(Dataset):
                            Applied after filter_types filtering.  Always pass
                            dev_subsample=True for dev datasets.
             dev_subsample_seed: Random seed for reproducible dev subsampling.
+            multi_crop: When True, each audio file is expanded into multiple
+                        fixed-length crops according to get_crop_starts().
+                        Labels are shared across all crops of the same file.
+                        Requires a one-time pre-scan of audio durations at init.
         """
         super(atadd_dataset, self).__init__()
 
@@ -98,6 +173,7 @@ class atadd_dataset(Dataset):
         self.AudioAugmentor = AudioAugmentor()
         self.dev_subsample = dev_subsample
         self.dev_subsample_seed = dev_subsample_seed
+        self.multi_crop = multi_crop
         self.filter_types = None
         if filter_types is not None:
             self.filter_types = frozenset(t.lower() for t in filter_types)
@@ -152,11 +228,20 @@ class atadd_dataset(Dataset):
 
         self._print_stats()
 
+        # Build the flat item list used by __len__ / __getitem__.
+        # multi_crop=True: pre-scan audio lengths once and expand each file into
+        # multiple (file, crop_start) entries; labels are preserved per crop.
+        # multi_crop=False: one entry per file, crop_start=None → pad_dataset().
+        if self.multi_crop:
+            self._items = self._expand_multi_crop_items()
+        else:
+            self._items = [(f, c, l, g, None) for f, c, l, g in self.all_files]
+
     def __len__(self):
-        return len(self.all_files)
+        return len(self._items)
 
     def __getitem__(self, idx):
-        filename, class_type, label, generator = self.all_files[idx]
+        filename, class_type, label, generator, crop_start = self._items[idx]
         waveform, sr = self._load_audio(filename)
 
         # if self.rawboost:
@@ -189,11 +274,16 @@ class atadd_dataset(Dataset):
                     # speech / sound / singing → RawBoost algo=5
                     waveform = process_Rawboost_feature(wav_np, sr=sr, algo=5)
 
-        waveform = pad_dataset(waveform, self.audio_length)
-
         if self.musanrir:
             audio_length = waveform.size(0)
             waveform = self._apply_augmentation(waveform, audio_length)
+            
+        # crop_start=None → default single-crop / repeat-pad (multi_crop=False path)
+        # crop_start=int  → extract the specific window from the multi-crop schedule
+        if crop_start is None:
+            waveform = pad_dataset(waveform, self.audio_length)
+        else:
+            waveform = _crop_waveform(waveform, crop_start, self.audio_length)
 
         label = self.label[label]
         class_type = self.class_type[class_type]
@@ -260,6 +350,41 @@ class atadd_dataset(Dataset):
                     add_key("/".join(parts[start:]), member_name)
 
         return members
+
+    def _get_audio_num_samples(self, filename: str) -> int:
+        """Return audio length in samples at 16 kHz (header-only read when possible)."""
+        if not self._tar_audio:
+            filepath = os.path.join(self.path_to_audio, filename)
+            return _audio_num_samples_from_file(filepath)
+        member_name = self._resolve_tar_member(filename)
+        tar = self._get_tar_file()
+        extracted = tar.extractfile(member_name)
+        if extracted is None:
+            raise FileNotFoundError(
+                f"Tar member is not a regular file: {member_name!r}"
+            )
+        with extracted:
+            data = extracted.read()
+        return _audio_num_samples_from_file(io.BytesIO(data))
+
+    def _expand_multi_crop_items(self):
+        """Pre-scan audio lengths and return expanded (file, type, label, gen, crop_start) list."""
+        items = []
+        n_files = len(self.all_files)
+        print(f"[multi_crop] pre-scanning {n_files} files for crop expansion …", flush=True)
+        for k, (filename, class_type, label, generator) in enumerate(self.all_files):
+            if k > 0 and k % 2000 == 0:
+                print(f"[multi_crop]  … {k}/{n_files}", flush=True)
+            try:
+                n_samples = self._get_audio_num_samples(filename)
+            except Exception as exc:
+                print(f"[multi_crop] warn: {filename}: {exc} → single crop")
+                n_samples = 0
+            for start in get_crop_starts(n_samples, self.audio_length):
+                items.append((filename, class_type, label, generator, start))
+        print(f"[multi_crop] {n_files} files → {len(items)} crops "
+              f"(×{len(items)/max(n_files,1):.2f} avg)", flush=True)
+        return items
 
     def _apply_augmentation(self, waveform, audio_length):
         augtype = random.randint(0, 4)
@@ -343,6 +468,8 @@ class atadd_dataset(Dataset):
                 gen_str = "  ".join(f"{g}:{n}" for g, n in gen_sorted)
                 lines.append(f"    generator : {gen_str}")
 
+        if self.multi_crop:
+            lines.append(f"  Multi-crop    : enabled (pre-scan pending …)")
         lines.append(sep)
         print("\n".join(lines))
 
@@ -385,28 +512,57 @@ class atadd_dataset(Dataset):
 
 
 class atadd_eval_dataset(Dataset):
-    def __init__(self, path_to_audio, audio_length=64600, exts=(".flac", ".wav")):
+    def __init__(
+        self,
+        path_to_audio,
+        audio_length=64600,
+        exts=(".flac", ".wav"),
+        multi_crop=False,
+    ):
         super(atadd_eval_dataset, self).__init__()
 
         self.path_to_audio = path_to_audio
         self.audio_length = audio_length
+        self.multi_crop = multi_crop
 
         self.all_files = sorted([
             f for f in os.listdir(self.path_to_audio)
             if f.lower().endswith(exts)
         ])
+        if self.multi_crop:
+            self._items = self._expand_multi_crop_items()
+        else:
+            self._items = [(f, None) for f in self.all_files]
 
     def __len__(self):
-        return len(self.all_files)
+        return len(self._items)
 
     def __getitem__(self, idx):
-        filename = self.all_files[idx]
+        filename, crop_start = self._items[idx]
         filepath = os.path.join(self.path_to_audio, filename)
 
         waveform, sr = torchaudio_load(filepath)
-        waveform = pad_dataset(waveform, self.audio_length)
+        if crop_start is None:
+            waveform = pad_dataset(waveform, self.audio_length)
+        else:
+            waveform = _crop_waveform(waveform, crop_start, self.audio_length)
 
         return waveform, filename
+
+    def _expand_multi_crop_items(self):
+        items = []
+        for filename in self.all_files:
+            filepath = os.path.join(self.path_to_audio, filename)
+            try:
+                n_samples = _audio_num_samples_from_file(filepath)
+            except Exception as exc:
+                print(f"[eval_multi_crop] warn: {filename}: {exc} -> single crop")
+                n_samples = 0
+            for start in get_crop_starts(n_samples, self.audio_length):
+                items.append((filename, start))
+        print(f"[eval_multi_crop] {len(self.all_files)} files -> {len(items)} crops "
+              f"(x{len(items)/max(len(self.all_files), 1):.2f} avg)", flush=True)
+        return items
 
     def collate_fn(self, samples):
         return default_collate(samples)

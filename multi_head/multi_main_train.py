@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import yaml
 from sklearn.metrics import f1_score
 from torch.utils.data import DataLoader
@@ -149,6 +150,7 @@ def load_mult_namespace(yaml_path: str) -> argparse.Namespace:
     flat.setdefault("eval_strategy", "oracle")
     flat.setdefault("ssl_backbone", "xlsr")
     flat.setdefault("backbone_dim", None)
+    flat.setdefault("multi_crop", False)
     return argparse.Namespace(**flat)
 
 
@@ -178,6 +180,16 @@ def _save_config_snapshot(args: argparse.Namespace) -> None:
     )
 
 
+def _dataloader_runtime_kwargs(num_workers: int) -> Dict[str, Any]:
+    num_workers = int(num_workers)
+    if num_workers <= 0:
+        return {}
+    return {
+        "persistent_workers": True,
+        "prefetch_factor": 4,
+    }
+
+
 def _dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
     ft = args.filter_types_parsed
     if ft:
@@ -190,6 +202,7 @@ def _dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
     )
     aug_probs = {k: v for k, v in probs.items() if v > 0.0} or None
 
+    use_multi_crop = bool(getattr(args, "multi_crop", False))
     train_ds = atadd_dataset(
         args.atadd_t2_train_audio,
         args.atadd_t2_train_label,
@@ -197,6 +210,7 @@ def _dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
         filter_types=ft,
         aug_probs=aug_probs,
         music_aug_method=args.music_aug_method,
+        multi_crop=use_multi_crop,
     )
     sample_ds = atadd_dataset(
         args.atadd_t2_dev_audio,
@@ -204,6 +218,7 @@ def _dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
         audio_length=args.audio_len,
         filter_types=ft,
         dev_subsample=True,
+        multi_crop=use_multi_crop,
     )
 
     def _loader(ds) -> DataLoader:
@@ -214,6 +229,7 @@ def _dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
             sampler=torch_sampler.SubsetRandomSampler(range(len(ds))),
             num_workers=args.num_workers,
             pin_memory=args.cuda,
+            **_dataloader_runtime_kwargs(args.num_workers),
         )
 
     assert len(train_ds) and len(sample_ds)
@@ -228,6 +244,7 @@ def _full_dev_loader(args: argparse.Namespace) -> DataLoader:
         audio_length=args.audio_len,
         filter_types=ft,
         dev_subsample=False,
+        multi_crop=bool(getattr(args, "multi_crop", False)),
     )
     return DataLoader(
         ds,
@@ -236,6 +253,7 @@ def _full_dev_loader(args: argparse.Namespace) -> DataLoader:
         sampler=torch_sampler.SubsetRandomSampler(range(len(ds))),
         num_workers=args.num_workers,
         pin_memory=args.cuda,
+        **_dataloader_runtime_kwargs(args.num_workers),
     )
 
 
@@ -256,34 +274,128 @@ def _scores_to_metrics(
     return float(eer), float(f1), thr
 
 
+def _score_real_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    return F.softmax(logits, dim=1)[:, 0]
+
+
+@torch.no_grad()
+def _collect_file_logits(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    *,
+    desc: str,
+) -> Tuple[List[str], np.ndarray | None, np.ndarray | None, Dict[str, torch.Tensor]]:
+    """Run crop batches and average logits per filename."""
+    model.eval()
+    acc: Dict[str, Dict[str, Any]] = {}
+    for batch in tqdm(loader, leave=False, desc=desc):
+        if len(batch) == 5:
+            feat, fnames, labels, class_types, _ = batch
+            labels_l = labels.long().cpu().tolist()
+            types_l = class_types.long().cpu().tolist()
+        else:
+            feat, fnames = batch
+            labels_l = [None] * len(fnames)
+            types_l = [None] * len(fnames)
+
+        wav = feat.to(device, non_blocking=True)
+        logits_by_head = model(wav)
+        logits_cpu = {
+            k: v.detach().float().cpu()
+            for k, v in logits_by_head.items()
+        }
+
+        for i, raw_name in enumerate(fnames):
+            name = raw_name.strip()
+            if name not in acc:
+                acc[name] = {
+                    "count": 0,
+                    "label": labels_l[i],
+                    "type": types_l[i],
+                    "logits": {k: torch.zeros_like(v[i]) for k, v in logits_cpu.items()},
+                }
+            item = acc[name]
+            item["count"] += 1
+            for key, logits in logits_cpu.items():
+                item["logits"][key] += logits[i]
+
+    names = list(acc.keys())
+    labels_np = None
+    types_np = None
+    if names and acc[names[0]]["label"] is not None:
+        labels_np = np.array([acc[n]["label"] for n in names], dtype=np.int64)
+        types_np = np.array([acc[n]["type"] for n in names], dtype=np.int64)
+
+    agg_logits: Dict[str, torch.Tensor] = {}
+    if names:
+        for key in acc[names[0]]["logits"]:
+            agg_logits[key] = torch.stack([
+                acc[n]["logits"][key] / acc[n]["count"]
+                for n in names
+            ])
+
+    return names, labels_np, types_np, agg_logits
+
+
+def _select_specialist_logits(
+    logits_by_head: Dict[str, torch.Tensor],
+    type_idx: np.ndarray,
+) -> torch.Tensor:
+    stack = torch.stack(
+        [
+            logits_by_head["speech"],
+            logits_by_head["sound"],
+            logits_by_head["singing"],
+            logits_by_head["music"],
+        ],
+        dim=1,
+    )
+    idx = torch.from_numpy(type_idx.astype(np.int64)).clamp(0, 3)
+    return stack[torch.arange(stack.size(0)), idx]
+
+
 def _forward_scores(
     model: torch.nn.Module,
     loader: DataLoader,
     args: argparse.Namespace,
     oracle: bool,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    model.eval()
-    sc_l, lb_l, ty_l = [], [], []
-    with torch.no_grad():
-        for feat, _, labels, class_types, _ in tqdm(
-            loader, leave=False, desc="oracle_scores" if oracle else "total_scores"
-        ):
-            wav = feat.to(args.device)
-            ctype = class_types.long().to(args.device)
-            sc, _ = (
-                inference(model, wav, audio_type=ctype)
-                if oracle
-                else inference(model, wav, audio_type=None)
-            )
-            sc_l.append(sc.detach().float().cpu())
-            lb_l.append(labels.long().cpu())
-            ty_l.append(class_types.numpy())
-
-    return (
-        torch.cat(sc_l).numpy(),
-        torch.cat(lb_l).numpy().astype(np.int64),
-        np.concatenate(ty_l),
+    _, labels_np, types_np, logits_by_head = _collect_file_logits(
+        model,
+        loader,
+        args.device,
+        desc="oracle_file_scores" if oracle else "total_file_scores",
     )
+    if labels_np is None or types_np is None:
+        raise ValueError("_forward_scores requires labels and audio types.")
+    logits = (
+        _select_specialist_logits(logits_by_head, types_np)
+        if oracle
+        else logits_by_head["total"]
+    )
+    scores = _score_real_from_logits(logits).numpy()
+    return scores, labels_np, types_np
+
+
+def _mean_dev_loss_from_logits(
+    logits_by_head: Dict[str, torch.Tensor],
+    labels_np: np.ndarray,
+    types_np: np.ndarray,
+    args: argparse.Namespace,
+    cw: torch.Tensor,
+) -> float:
+    labels = torch.from_numpy(labels_np).long().to(args.device)
+    specialist_logits = _select_specialist_logits(logits_by_head, types_np).to(args.device)
+    total_logits = logits_by_head["total"].to(args.device)
+    loss_specialist = F.cross_entropy(specialist_logits, labels, weight=cw)
+    loss_total = F.cross_entropy(total_logits, labels, weight=cw)
+    w_sum = float(args.specialist_weight) + float(args.total_weight)
+    loss = (
+        float(args.specialist_weight) * loss_specialist
+        + float(args.total_weight) * loss_total
+    ) / w_sum
+    return float(loss.item())
 
 
 @torch.no_grad()
@@ -293,23 +405,15 @@ def _mean_dev_loss(
     args: argparse.Namespace,
     cw: torch.Tensor,
 ) -> float:
-    model.eval()
-    acc: List[float] = []
-    for feat, _, labels, class_types, _ in loader:
-        wav = feat.to(args.device)
-        lbl = labels.long().to(args.device)
-        ctype = class_types.long().to(args.device)
-        loss, _ = compute_loss(
-            model,
-            wav,
-            lbl,
-            ctype,
-            specialist_weight=float(args.specialist_weight),
-            total_weight=float(args.total_weight),
-            class_weight=cw,
-        )
-        acc.append(loss.item())
-    return float(sum(acc) / max(len(acc), 1))
+    _, labels_np, types_np, logits_by_head = _collect_file_logits(
+        model,
+        loader,
+        args.device,
+        desc="dev_file_loss",
+    )
+    if labels_np is None or types_np is None:
+        raise ValueError("_mean_dev_loss requires labels and audio types.")
+    return _mean_dev_loss_from_logits(logits_by_head, labels_np, types_np, args, cw)
 
 
 def _persist_latest(
@@ -434,9 +538,9 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
         for i, (feat, _, labels, class_types, _) in enumerate(
             tqdm(train_ld, leave=False, desc=f"ep {epoch}")
         ):
-            wav = feat.to(args.device)
-            lbl = labels.long().to(args.device)
-            ctype = class_types.long().to(args.device)
+            wav = feat.to(args.device, non_blocking=True)
+            lbl = labels.long().to(args.device, non_blocking=True)
+            ctype = class_types.long().to(args.device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
             loss, parts = compute_loss(
@@ -683,43 +787,51 @@ def cmd_infer(ap: argparse.Namespace) -> None:
     out_paths = _infer_out_paths(ap.out_csv, strategies)
     rows_by: Dict[str, List[Tuple[str, float]]] = {s: [] for s in strategies}
 
-    ds = atadd_eval_dataset(ap.wav_dir, audio_length=args_ns.audio_len)
+    ds = atadd_eval_dataset(
+        ap.wav_dir,
+        audio_length=args_ns.audio_len,
+        multi_crop=bool(getattr(args_ns, "multi_crop", False)),
+    )
     ld = DataLoader(
         ds,
         batch_size=int(bs),
         shuffle=False,
         num_workers=args_ns.num_workers,
         pin_memory=args_ns.cuda,
+        **_dataloader_runtime_kwargs(args_ns.num_workers),
     )
 
-    model.eval()
-    with torch.no_grad():
-        for wav_batch, fnames in tqdm(ld, desc="infer"):
-            wav_batch = wav_batch.to(args_ns.device)
-            batch_scores: Dict[str, torch.Tensor] = {}
-            if "total" in want:
-                sc, _ = inference(model, wav_batch, audio_type=None)
-                batch_scores["total"] = sc
-            if "oracle" in want:
-                assert prot is not None
-                idx = [prot.get(f.strip(), -1) for f in fnames]
-                if any(i < 0 for i in idx):
-                    missing = [n for n, i in zip(fnames, idx) if i < 0]
-                    raise ValueError(
-                        "[mult] oracle strategy: protocol missing filenames: "
-                        f"{missing[:5]}{'...' if len(missing) > 5 else ''}"
-                    )
-                idx_t = torch.tensor(idx, device=args_ns.device, dtype=torch.long)
-                sc_o, _ = inference(model, wav_batch, audio_type=idx_t)
-                batch_scores["oracle"] = sc_o
-            if "vote" in want:
-                sc_v, _ = inference_vote(model, wav_batch)
-                batch_scores["vote"] = sc_v
-
-            for s in strategies:
-                sc = batch_scores[s]
-                for n, sv in zip(fnames, sc.cpu().tolist()):
-                    rows_by[s].append((n.strip(), float(sv)))
+    fnames, _, _, logits_by_head = _collect_file_logits(
+        model,
+        ld,
+        args_ns.device,
+        desc="infer_file_logits",
+    )
+    if "total" in want:
+        sc = _score_real_from_logits(logits_by_head["total"])
+        rows_by["total"] = [(n, float(v)) for n, v in zip(fnames, sc.tolist())]
+    if "oracle" in want:
+        assert prot is not None
+        idx = np.array([prot.get(f.strip(), -1) for f in fnames], dtype=np.int64)
+        if np.any(idx < 0):
+            missing = [n for n, i in zip(fnames, idx) if i < 0]
+            raise ValueError(
+                "[mult] oracle strategy: protocol missing filenames: "
+                f"{missing[:5]}{'...' if len(missing) > 5 else ''}"
+            )
+        oracle_logits = _select_specialist_logits(logits_by_head, idx)
+        sc = _score_real_from_logits(oracle_logits)
+        rows_by["oracle"] = [(n, float(v)) for n, v in zip(fnames, sc.tolist())]
+    if "vote" in want:
+        probs = torch.stack(
+            [
+                F.softmax(logits_by_head[k], dim=1)
+                for k in ("speech", "sound", "singing", "music", "total")
+            ],
+            dim=1,
+        )
+        sc = probs.mean(dim=1)[:, 0]
+        rows_by["vote"] = [(n, float(v)) for n, v in zip(fnames, sc.tolist())]
 
     thr = float(getattr(ap, "score_threshold", 0.5))
     for s in strategies:

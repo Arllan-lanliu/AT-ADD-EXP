@@ -21,6 +21,7 @@ ssl_backbone: xlsr_beats   # xlsr | beats | xlsr_beats (alias: dual); dual uses 
 
 # For fused dual-SSL experts, optional backbone_dim overrides fused AASIST in_dim (default 1024).
 train_task: atadd-track2
+multi_crop: true
 
 # Routing loss weights
 specialist_weight: 0.05  # ← 降低，因为 music 数据少
@@ -28,7 +29,7 @@ total_weight: 0.95       # ← 提高，让 total head 更强
 freeze_backbone: false
 
 filter_types:  # 留空表示使用所有类型
-out_fold: ./ckpt_t2_multi_head_layer/xslrbeats_xlsr3_11_24
+out_fold: ./ckpt_t2_multi_crop/xslrbeats_xlsr3_11_24
 
 # Data augmentation (针对少数类)
 aug:
@@ -44,7 +45,7 @@ batch_size: 24
 lr: 0.000001           
 lr_decay: 0.5
 interval: 2           
-num_workers: 4
+num_workers: 16
 seed: 1234
 audio_len: 64600
 continue_training: false

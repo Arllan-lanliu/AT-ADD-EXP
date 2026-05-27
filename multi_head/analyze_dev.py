@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from sklearn.metrics import classification_report, f1_score
 from torch.utils.data import DataLoader
 import torch.utils.data.sampler as torch_sampler
@@ -32,7 +33,7 @@ while _rs in sys.path:
 sys.path.insert(0, _rs)
 
 from data.dataset import atadd_dataset
-from multi_head.multi_head import build_mult_head_from_args, inference, inference_vote
+from multi_head.multi_head import build_mult_head_from_args
 from utils import metrics as em
 
 IDX_TO_TYPE = {0: "speech", 1: "sound", 2: "singing", 3: "music"}
@@ -91,6 +92,85 @@ def _scores_to_metrics(
     return float(eer), float(f1), float(thr)
 
 
+def _dataloader_runtime_kwargs(num_workers: int) -> Dict[str, Any]:
+    num_workers = int(num_workers)
+    if num_workers <= 0:
+        return {}
+    return {
+        "persistent_workers": True,
+        "prefetch_factor": 4,
+    }
+
+
+def _score_real_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    return F.softmax(logits, dim=1)[:, 0]
+
+
+@torch.no_grad()
+def _collect_file_logits(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    *,
+    device: torch.device,
+    desc: str,
+) -> Tuple[List[str], np.ndarray, np.ndarray, Dict[str, torch.Tensor]]:
+    model.eval()
+    acc: Dict[str, Dict[str, Any]] = {}
+    for feat, fnames, labels, class_types, _ in tqdm(
+        loader, leave=False, desc=desc
+    ):
+        wav = feat.to(device, non_blocking=True)
+        logits_cpu = {
+            k: v.detach().float().cpu()
+            for k, v in model(wav).items()
+        }
+        labels_l = labels.long().cpu().tolist()
+        types_l = class_types.long().cpu().tolist()
+
+        for i, raw_name in enumerate(fnames):
+            name = raw_name.strip()
+            if name not in acc:
+                acc[name] = {
+                    "count": 0,
+                    "label": labels_l[i],
+                    "type": types_l[i],
+                    "logits": {k: torch.zeros_like(v[i]) for k, v in logits_cpu.items()},
+                }
+            item = acc[name]
+            item["count"] += 1
+            for key, logits in logits_cpu.items():
+                item["logits"][key] += logits[i]
+
+    names = list(acc.keys())
+    labels_np = np.array([acc[n]["label"] for n in names], dtype=np.int64)
+    types_np = np.array([acc[n]["type"] for n in names], dtype=np.int64)
+    agg_logits: Dict[str, torch.Tensor] = {}
+    if names:
+        for key in acc[names[0]]["logits"]:
+            agg_logits[key] = torch.stack([
+                acc[n]["logits"][key] / acc[n]["count"]
+                for n in names
+            ])
+    return names, labels_np, types_np, agg_logits
+
+
+def _select_specialist_logits(
+    logits_by_head: Dict[str, torch.Tensor],
+    type_idx: np.ndarray,
+) -> torch.Tensor:
+    stack = torch.stack(
+        [
+            logits_by_head["speech"],
+            logits_by_head["sound"],
+            logits_by_head["singing"],
+            logits_by_head["music"],
+        ],
+        dim=1,
+    )
+    idx = torch.from_numpy(type_idx.astype(np.int64)).clamp(0, 3)
+    return stack[torch.arange(stack.size(0)), idx]
+
+
 def _full_dev_loader(args: argparse.Namespace) -> DataLoader:
     ft = args.filter_types_parsed
     ds = atadd_dataset(
@@ -99,6 +179,7 @@ def _full_dev_loader(args: argparse.Namespace) -> DataLoader:
         audio_length=args.audio_len,
         filter_types=ft,
         dev_subsample=False,
+        multi_crop=bool(getattr(args, "multi_crop", False)),
     )
     return DataLoader(
         ds,
@@ -107,6 +188,7 @@ def _full_dev_loader(args: argparse.Namespace) -> DataLoader:
         sampler=torch_sampler.SubsetRandomSampler(range(len(ds))),
         num_workers=args.num_workers,
         pin_memory=args.cuda,
+        **_dataloader_runtime_kwargs(args.num_workers),
     )
 
 
@@ -117,37 +199,31 @@ def _collect_scores_one_strategy(
     strategy: str,
     device: torch.device,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Returns scores (P real), labels 0/1, type_idx 0–3, names."""
-    model.eval()
-    sc_l: List[np.ndarray] = []
-    lb_l: List[np.ndarray] = []
-    ty_l: List[np.ndarray] = []
-    nm_l: List[str] = []
-    with torch.no_grad():
-        for feat, fnames, labels, class_types, _ in tqdm(
-            loader, leave=False, desc=f"analyze_dev[{strategy}]"
-        ):
-            wav = feat.to(device)
-            ctype = class_types.long().to(device)
+    """Returns file-level scores (P real), labels 0/1, type_idx 0–3, names."""
+    names, labels, types, logits_by_head = _collect_file_logits(
+        model,
+        loader,
+        device=device,
+        desc=f"analyze_dev[{strategy}]",
+    )
+    if strategy == "oracle":
+        logits = _select_specialist_logits(logits_by_head, types)
+        scores = _score_real_from_logits(logits).numpy()
+    elif strategy == "total":
+        scores = _score_real_from_logits(logits_by_head["total"]).numpy()
+    elif strategy == "vote":
+        probs = torch.stack(
+            [
+                F.softmax(logits_by_head[k], dim=1)
+                for k in ("speech", "sound", "singing", "music", "total")
+            ],
+            dim=1,
+        )
+        scores = probs.mean(dim=1)[:, 0].numpy()
+    else:
+        raise ValueError(strategy)
 
-            if strategy == "oracle":
-                sc, _ = inference(model, wav, audio_type=ctype)
-            elif strategy == "total":
-                sc, _ = inference(model, wav, audio_type=None)
-            elif strategy == "vote":
-                sc, _ = inference_vote(model, wav)
-            else:
-                raise ValueError(strategy)
-
-            sc_l.append(sc.detach().float().cpu().numpy())
-            lb_l.append(labels.long().numpy())
-            ty_l.append(class_types.long().numpy())
-            nm_l.extend(f.strip() for f in fnames)
-
-    scores = np.concatenate(sc_l, axis=0)
-    labels = np.concatenate(lb_l).astype(np.int64)
-    types = np.concatenate(ty_l).astype(np.int64)
-    return scores, labels, types, np.array(nm_l)
+    return scores, labels, types, np.array(names)
 
 
 def _per_type_macro_f1(
