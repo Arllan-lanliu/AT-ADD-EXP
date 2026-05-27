@@ -2,6 +2,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 import os
+import io
+import tarfile
 import librosa
 from torch.utils.data.dataloader import default_collate
 import random
@@ -15,6 +17,16 @@ def torchaudio_load(filepath):
     wave, sr = librosa.load(filepath, sr=16000)
     waveform = torch.Tensor(np.expand_dims(wave, axis=0))
     return [waveform, sr]
+
+
+def _is_tar_audio_source(path):
+    path = os.fspath(path)
+    lower = path.lower()
+    return lower.endswith((".tar", ".tar.gz", ".tgz"))
+
+
+def _normalize_tar_name(name):
+    return name.replace("\\", "/").lstrip("./")
 
 
 def pad_dataset(wav, audio_length=64600):
@@ -68,6 +80,12 @@ class atadd_dataset(Dataset):
         self.path_to_audio = path_to_audio
         self.path_to_protocol = path_to_protocol
         self.audio_length = audio_length
+        self._tar_audio = _is_tar_audio_source(self.path_to_audio)
+        self._tar_file = None
+        self._tar_pid = None
+        self._tar_members = {}
+        if self._tar_audio:
+            self._tar_members = self._build_tar_member_index(self.path_to_audio)
         self.label = {"fake": 1, "real": 0}
         self.class_type = {
             "speech": 0,
@@ -139,9 +157,7 @@ class atadd_dataset(Dataset):
 
     def __getitem__(self, idx):
         filename, class_type, label, generator = self.all_files[idx]
-        filepath = os.path.join(self.path_to_audio, filename)
-
-        waveform, sr = torchaudio_load(filepath)
+        waveform, sr = self._load_audio(filename)
 
         # if self.rawboost:
         #     waveform = waveform.squeeze(dim=0).detach().cpu().numpy()
@@ -182,6 +198,68 @@ class atadd_dataset(Dataset):
         label = self.label[label]
         class_type = self.class_type[class_type]
         return waveform, filename, label, class_type, generator
+
+    def _load_audio(self, filename):
+        if not self._tar_audio:
+            filepath = os.path.join(self.path_to_audio, filename)
+            return torchaudio_load(filepath)
+
+        member_name = self._resolve_tar_member(filename)
+        tar = self._get_tar_file()
+        extracted = tar.extractfile(member_name)
+        if extracted is None:
+            raise FileNotFoundError(
+                f"Tar member is not a regular file: {member_name!r} in {self.path_to_audio!r}"
+            )
+        with extracted:
+            return torchaudio_load(io.BytesIO(extracted.read()))
+
+    def _get_tar_file(self):
+        pid = os.getpid()
+        if self._tar_file is None or self._tar_pid != pid:
+            self._tar_file = tarfile.open(self.path_to_audio, "r:*")
+            self._tar_pid = pid
+        return self._tar_file
+
+    def _resolve_tar_member(self, filename):
+        key = _normalize_tar_name(filename)
+        member_name = self._tar_members.get(key)
+        if member_name is None:
+            member_name = self._tar_members.get(os.path.basename(key))
+        if member_name is None:
+            raise FileNotFoundError(
+                f"Audio file {filename!r} was not found in tar archive {self.path_to_audio!r}"
+            )
+        return member_name
+
+    @staticmethod
+    def _build_tar_member_index(path_to_audio):
+        members = {}
+        collisions = set()
+
+        def add_key(key, member_name):
+            if not key or key in collisions:
+                return
+            existing = members.get(key)
+            if existing is None:
+                members[key] = member_name
+            elif existing != member_name:
+                members.pop(key, None)
+                collisions.add(key)
+
+        with tarfile.open(path_to_audio, "r:*") as tar:
+            for member in tar.getmembers():
+                if not member.isfile():
+                    continue
+                member_name = member.name
+                norm = _normalize_tar_name(member_name)
+                parts = norm.split("/")
+                add_key(norm, member_name)
+                add_key(parts[-1], member_name)
+                for start in range(1, len(parts) - 1):
+                    add_key("/".join(parts[start:]), member_name)
+
+        return members
 
     def _apply_augmentation(self, waveform, audio_length):
         augtype = random.randint(0, 4)
