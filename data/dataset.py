@@ -41,6 +41,9 @@ class atadd_dataset(Dataset):
                  filter_types=None,
                  aug_probs=None,
                  music_aug_method="spec_augment",
+                 sound_aug_methods=None,
+                 rir_path="/data/liulan/workspace/dataset/RIRS_NOISES",
+                 musan_path="/data/liulan/workspace/dataset/musan",
                  dev_subsample=False,
                  dev_subsample_seed=42):
         """
@@ -53,7 +56,13 @@ class atadd_dataset(Dataset):
                               aug_probs["music"] > 0.
                               "pitch_shift"  → PitchShiftAugment (±1–3 semitones)
                               "spec_augment" → SpecAugmentForAudio (freq-band masking)
-                       speech / sound / singing always use process_Rawboost_feature(algo=5).
+                       speech / singing always use process_Rawboost_feature(algo=5).
+                       sound samples randomly choose one method from
+                       sound_aug_methods when augmentation is triggered.
+            sound_aug_methods: Sequence of sound augmentation methods. Supported:
+                               "rawboost", "musan_noise", "rir_reverb".
+                               The methods are alternatives, not stacked.
+            rir_path / musan_path: Data roots for RIRS_NOISES and MUSAN.
             dev_subsample: When True, subsample the loaded rows per audio type using
                            stratified sampling over (label, generator) cells.
                            Budgets are defined in _DEV_SUBSAMPLE_BUDGET:
@@ -77,9 +86,11 @@ class atadd_dataset(Dataset):
         }
         self.rawboost = rawboost
         self.musanrir = musanrir
-        self.AudioAugmentor = AudioAugmentor()
+        self.AudioAugmentor = None
         self.dev_subsample = dev_subsample
         self.dev_subsample_seed = dev_subsample_seed
+        self.rir_path = rir_path
+        self.musan_path = musan_path
         self.filter_types = None
         if filter_types is not None:
             self.filter_types = frozenset(t.lower() for t in filter_types)
@@ -100,6 +111,9 @@ class atadd_dataset(Dataset):
             if active:
                 self.aug_probs = active
                 self.music_aug_method = music_aug_method
+                if "sound" in active:
+                    self._ensure_audio_augmentor()
+                    self.sound_aug_methods = self._resolve_sound_aug_methods(sound_aug_methods)
                 # Pre-instantiate the music augmentor if music is in active probs
                 if "music" in active:
                     if music_aug_method == "pitch_shift":
@@ -170,8 +184,11 @@ class atadd_dataset(Dataset):
                     else:
                         waveform = torch.tensor(augmented, dtype=torch.float32)
                 else:
-                    # speech / sound / singing → RawBoost algo=5
-                    waveform = process_Rawboost_feature(wav_np, sr=sr, algo=5)
+                    if class_type == "sound":
+                        waveform = self._apply_sound_augmentation(wav_np, sr)
+                    else:
+                        # speech / singing → RawBoost algo=5
+                        waveform = process_Rawboost_feature(wav_np, sr=sr, algo=5)
 
         waveform = pad_dataset(waveform, self.audio_length)
 
@@ -183,17 +200,88 @@ class atadd_dataset(Dataset):
         class_type = self.class_type[class_type]
         return waveform, filename, label, class_type, generator
 
+    def _resolve_sound_aug_methods(self, sound_aug_methods):
+        if sound_aug_methods is None:
+            requested = ("rawboost", "musan_noise", "rir_reverb")
+        elif isinstance(sound_aug_methods, str):
+            requested = tuple(
+                item.strip() for item in sound_aug_methods.split(",") if item.strip()
+            )
+        else:
+            requested = tuple(sound_aug_methods)
+
+        allowed = {"rawboost", "musan_noise", "rir_reverb"}
+        unknown = sorted(set(requested) - allowed)
+        if unknown:
+            raise ValueError(
+                f"Unknown sound_aug_methods {unknown}; allowed: {sorted(allowed)}"
+            )
+
+        resolved = []
+        for method in requested:
+            if method == "musan_noise":
+                has_musan = any(
+                    self.AudioAugmentor.noiselist.get(cat)
+                    for cat in self.AudioAugmentor.noisetypes
+                )
+                if has_musan:
+                    resolved.append(method)
+            elif method == "rir_reverb":
+                if self.AudioAugmentor.rir_files:
+                    resolved.append(method)
+            else:
+                resolved.append(method)
+
+        # Always keep a valid fallback so aug_sound remains usable even if the
+        # external augmentation roots are missing or empty.
+        return tuple(resolved) or ("rawboost",)
+
+    def _apply_sound_augmentation(self, wav_np, sr):
+        self._ensure_audio_augmentor()
+        method = random.choice(getattr(self, "sound_aug_methods", ("rawboost",)))
+        if method == "rawboost":
+            return process_Rawboost_feature(wav_np, sr=sr, algo=5)
+
+        audio = np.expand_dims(wav_np.astype(np.float32), axis=0)
+        audio_length = audio.shape[1]
+
+        if method == "rir_reverb":
+            augmented = self.AudioAugmentor.add_rev(audio, audio_length)[0]
+            return torch.tensor(augmented, dtype=torch.float32)
+
+        if method == "musan_noise":
+            available = [
+                cat for cat in self.AudioAugmentor.noisetypes
+                if self.AudioAugmentor.noiselist.get(cat)
+            ]
+            if not available:
+                return process_Rawboost_feature(wav_np, sr=sr, algo=5)
+            noise_type = random.choice(available)
+            augmented = self.AudioAugmentor.add_noise(audio, noise_type, audio_length)[0]
+            return torch.tensor(augmented, dtype=torch.float32)
+
+        raise ValueError(f"Unsupported sound augmentation method: {method}")
+
+    def _ensure_audio_augmentor(self):
+        if self.AudioAugmentor is None:
+            self.AudioAugmentor = AudioAugmentor(
+                rir_path=self.rir_path,
+                musan_path=self.musan_path,
+            )
+
     def _apply_augmentation(self, waveform, audio_length):
         augtype = random.randint(0, 4)
 
         if augtype == 0:
             return waveform
         elif augtype == 1:
+            self._ensure_audio_augmentor()
             waveform = waveform.unsqueeze(dim=0)
             waveform = self.AudioAugmentor.add_rev(waveform.numpy(), audio_length)
             waveform = torch.tensor(waveform).squeeze(dim=0)
             return waveform
         elif augtype in [2, 3, 4]:
+            self._ensure_audio_augmentor()
             noise_type = {2: 'noise', 3: 'speech', 4: 'music'}[augtype]
             waveform = waveform.unsqueeze(dim=0)
             waveform = self.AudioAugmentor.add_noise(waveform.numpy(), noise_type, audio_length)
@@ -239,6 +327,11 @@ class atadd_dataset(Dataset):
                         aug_desc = f"{method}  p={p}"
                     else:
                         aug_desc = f"RawBoost(algo=5)  p={p}"
+                        if t == "sound":
+                            methods = ",".join(
+                                getattr(self, "sound_aug_methods", ("rawboost",))
+                            )
+                            aug_desc = f"random[{methods}]  p={p}"
                 else:
                     aug_desc = "none"
                 lines.append(f"    {t:<10}  {aug_desc}")

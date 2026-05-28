@@ -1,0 +1,49 @@
+data:
+  atadd_t2_train_audio: /data/liulan/workspace/dataset/at_add_track2/train_dev
+  atadd_t2_train_label: /data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_4/train_random.csv
+  atadd_t2_dev_audio: /data/liulan/workspace/dataset/at_add_track2/train_dev
+  atadd_t2_dev_label: /data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_4/val_random.csv
+  atadd_t2_eval_audio: /data/liulan/workspace/dataset/at_add_track2/eval
+ssl:
+  xlsr: /data/liulan/workspace/huggingface/wav2vec2-xls-r-300m
+  beats: /data/liulan/workspace/huggingface/BEATs_iter3
+  xlsr_selected_layers:
+  - 3
+  - 11
+  - 24
+  xlsr_layer_fusion: cat_proj_v1
+  beats_selected_layers:
+  - 3
+  - 6
+  - 9
+  beats_layer_fusion: cat_proj_v1
+ssl_backbone: xlsr_beats
+train_task: atadd-track2
+specialist_weight: 0.05
+total_weight: 0.95
+freeze_backbone: false
+filter_types: null
+out_fold: ./ckpt_t2_multi_head_k_fold/fold_4
+aug:
+  aug_speech: 0.0
+  aug_sound: 0.8
+  aug_singing: 0.2
+  aug_music: 0.0
+  music_aug_method: spec_augment
+num_epochs: 100
+batch_size: 24
+lr: 1.0e-06
+lr_decay: 0.5
+interval: 2
+num_workers: 4
+seed: 1234
+audio_len: 64600
+continue_training: false
+eval_steps: 1000
+full_eval_steps: 6000
+eval_warmup_steps: 6000
+patience: 20
+save_best_by: f1
+eval_threshold_mode: fixed
+score_threshold: 0.5
+eval_strategy: total

@@ -1,0 +1,178 @@
+{
+  "script_version": "1.0",
+  "seed": 2026,
+  "mode": "random_stratified_by_type_label",
+  "type_col": "type",
+  "label_col": "label",
+  "expected_types": [
+    "music",
+    "singing",
+    "sound",
+    "speech"
+  ],
+  "allocation": {
+    "music": {
+      "fake": {
+        "train": 17069,
+        "dev": 4870,
+        "total": 21939
+      },
+      "real": {
+        "train": 4297,
+        "dev": 536,
+        "total": 4833
+      }
+    },
+    "singing": {
+      "fake": {
+        "train": 27000,
+        "dev": 12000,
+        "total": 39000
+      },
+      "real": {
+        "train": 9000,
+        "dev": 4000,
+        "total": 13000
+      }
+    },
+    "sound": {
+      "fake": {
+        "train": 29986,
+        "dev": 14989,
+        "total": 44975
+      },
+      "real": {
+        "train": 9854,
+        "dev": 4940,
+        "total": 14794
+      }
+    },
+    "speech": {
+      "fake": {
+        "train": 39576,
+        "dev": 39734,
+        "total": 79310
+      },
+      "real": {
+        "train": 9999,
+        "dev": 10000,
+        "total": 19999
+      }
+    }
+  },
+  "report": {
+    "train_rows": 146781,
+    "val_rows": 91069,
+    "train_label_counts": {
+      "fake": 113631,
+      "real": 33150
+    },
+    "val_label_counts": {
+      "fake": 71593,
+      "real": 19476
+    },
+    "train_type_counts": {
+      "music": 21366,
+      "singing": 36000,
+      "sound": 39840,
+      "speech": 49575
+    },
+    "val_type_counts": {
+      "music": 5406,
+      "singing": 16000,
+      "sound": 19929,
+      "speech": 49734
+    },
+    "train_type_label_counts": {
+      "music": {
+        "fake": 17069,
+        "real": 4297
+      },
+      "singing": {
+        "fake": 27000,
+        "real": 9000
+      },
+      "sound": {
+        "fake": 29986,
+        "real": 9854
+      },
+      "speech": {
+        "fake": 39576,
+        "real": 9999
+      }
+    },
+    "val_type_label_counts": {
+      "music": {
+        "fake": 4870,
+        "real": 536
+      },
+      "singing": {
+        "fake": 12000,
+        "real": 4000
+      },
+      "sound": {
+        "fake": 14989,
+        "real": 4940
+      },
+      "speech": {
+        "fake": 39734,
+        "real": 10000
+      }
+    },
+    "target_allocation": {
+      "music": {
+        "fake": {
+          "train": 17069,
+          "dev": 4870,
+          "total": 21939
+        },
+        "real": {
+          "train": 4297,
+          "dev": 536,
+          "total": 4833
+        }
+      },
+      "singing": {
+        "fake": {
+          "train": 27000,
+          "dev": 12000,
+          "total": 39000
+        },
+        "real": {
+          "train": 9000,
+          "dev": 4000,
+          "total": 13000
+        }
+      },
+      "sound": {
+        "fake": {
+          "train": 29986,
+          "dev": 14989,
+          "total": 44975
+        },
+        "real": {
+          "train": 9854,
+          "dev": 4940,
+          "total": 14794
+        }
+      },
+      "speech": {
+        "fake": {
+          "train": 39576,
+          "dev": 39734,
+          "total": 79310
+        },
+        "real": {
+          "train": 9999,
+          "dev": 10000,
+          "total": 19999
+        }
+      }
+    }
+  },
+  "output_files": {
+    "train": "train_random.csv",
+    "val": "val_random.csv",
+    "meta": "split_meta.json"
+  }
+}

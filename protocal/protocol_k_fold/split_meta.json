@@ -1,0 +1,2075 @@
+{
+  "script_version": "1.0",
+  "seed": 2026,
+  "mode": "k_fold_stratified_by_generator_label",
+  "n_splits": 5,
+  "stratify_cols": [
+    "generator",
+    "label"
+  ],
+  "source_files": {
+    "train_label": "/data/liulan/workspace/dataset/at_add_track2/labels/train.csv",
+    "dev_label": "/data/liulan/workspace/dataset/at_add_track2/labels/dev.csv"
+  },
+  "source_report": {
+    "train": {
+      "rows": 146781,
+      "label_counts": {
+        "fake": 113631,
+        "real": 33150
+      },
+      "type_counts": {
+        "music": 21366,
+        "singing": 36000,
+        "sound": 39840,
+        "speech": 49575
+      },
+      "generator_counts": {
+        "-": 33150,
+        "AudioLDM": 9995,
+        "AudioLDM2": 14289,
+        "Audiogen": 9991,
+        "CosyVoice": 1835,
+        "DiffSpeech_fastdiff": 1998,
+        "FastDiff": 1996,
+        "FastPitch_fastdiff": 1998,
+        "FastSpeech2_fastdiff": 1998,
+        "GlowTTS": 2000,
+        "GradTTS": 1994,
+        "IndexTTS1": 1997,
+        "Kokoro": 2000,
+        "Llasa1B": 1793,
+        "MelGAN": 1997,
+        "MeloTTS": 1996,
+        "MusicGen": 4212,
+        "MusicLDM": 4276,
+        "NeuCoSVC_inhouse": 9000,
+        "ParlerTTSmini": 1998,
+        "PortaSpeech_normal_fastdiff": 1996,
+        "SeedVC": 9000,
+        "So-VITS-SVC_inhouse": 9000,
+        "Stable Audio open": 4292,
+        "StarGANv2VC": 1999,
+        "Tacotron2": 1994,
+        "Tortoise": 1992,
+        "WaveGlow": 1997,
+        "WaveNet": 1999,
+        "prodiff_teacher_fastdiff": 1999
+      },
+      "generator_label_counts": {
+        "-": {
+          "real": 33150
+        },
+        "AudioLDM": {
+          "fake": 9995
+        },
+        "AudioLDM2": {
+          "fake": 14289
+        },
+        "Audiogen": {
+          "fake": 9991
+        },
+        "CosyVoice": {
+          "fake": 1835
+        },
+        "DiffSpeech_fastdiff": {
+          "fake": 1998
+        },
+        "FastDiff": {
+          "fake": 1996
+        },
+        "FastPitch_fastdiff": {
+          "fake": 1998
+        },
+        "FastSpeech2_fastdiff": {
+          "fake": 1998
+        },
+        "GlowTTS": {
+          "fake": 2000
+        },
+        "GradTTS": {
+          "fake": 1994
+        },
+        "IndexTTS1": {
+          "fake": 1997
+        },
+        "Kokoro": {
+          "fake": 2000
+        },
+        "Llasa1B": {
+          "fake": 1793
+        },
+        "MelGAN": {
+          "fake": 1997
+        },
+        "MeloTTS": {
+          "fake": 1996
+        },
+        "MusicGen": {
+          "fake": 4212
+        },
+        "MusicLDM": {
+          "fake": 4276
+        },
+        "NeuCoSVC_inhouse": {
+          "fake": 9000
+        },
+        "ParlerTTSmini": {
+          "fake": 1998
+        },
+        "PortaSpeech_normal_fastdiff": {
+          "fake": 1996
+        },
+        "SeedVC": {
+          "fake": 9000
+        },
+        "So-VITS-SVC_inhouse": {
+          "fake": 9000
+        },
+        "Stable Audio open": {
+          "fake": 4292
+        },
+        "StarGANv2VC": {
+          "fake": 1999
+        },
+        "Tacotron2": {
+          "fake": 1994
+        },
+        "Tortoise": {
+          "fake": 1992
+        },
+        "WaveGlow": {
+          "fake": 1997
+        },
+        "WaveNet": {
+          "fake": 1999
+        },
+        "prodiff_teacher_fastdiff": {
+          "fake": 1999
+        }
+      },
+      "type_label_counts": {
+        "music": {
+          "fake": 17069,
+          "real": 4297
+        },
+        "singing": {
+          "fake": 27000,
+          "real": 9000
+        },
+        "sound": {
+          "fake": 29986,
+          "real": 9854
+        },
+        "speech": {
+          "fake": 39576,
+          "real": 9999
+        }
+      }
+    },
+    "dev": {
+      "rows": 91069,
+      "label_counts": {
+        "fake": 71593,
+        "real": 19476
+      },
+      "type_counts": {
+        "music": 5406,
+        "singing": 16000,
+        "sound": 19929,
+        "speech": 49734
+      },
+      "generator_counts": {
+        "-": 19476,
+        "AudioLDM": 4997,
+        "AudioLDM2": 6222,
+        "Audiogen": 4992,
+        "CosyVoice": 2000,
+        "DiffSpeech_fastdiff": 1999,
+        "FastDiff": 1994,
+        "FastPitch_fastdiff": 1997,
+        "FastSpeech2_fastdiff": 1998,
+        "GlowTTS": 2000,
+        "GradTTS": 1997,
+        "IndexTTS1": 1998,
+        "Kokoro": 1998,
+        "Llasa1B": 1795,
+        "MelGAN": 2000,
+        "MeloTTS": 1988,
+        "MusicGen": 1204,
+        "MusicLDM": 1221,
+        "NeuCoSVC_inhouse": 4000,
+        "ParlerTTSmini": 1995,
+        "PortaSpeech_normal_fastdiff": 1994,
+        "SeedVC": 4000,
+        "So-VITS-SVC_inhouse": 4000,
+        "Stable Audio open": 1223,
+        "StarGANv2VC": 1999,
+        "Tacotron2": 1998,
+        "Tortoise": 1989,
+        "WaveGlow": 1997,
+        "WaveNet": 2000,
+        "prodiff_teacher_fastdiff": 1998
+      },
+      "generator_label_counts": {
+        "-": {
+          "real": 19476
+        },
+        "AudioLDM": {
+          "fake": 4997
+        },
+        "AudioLDM2": {
+          "fake": 6222
+        },
+        "Audiogen": {
+          "fake": 4992
+        },
+        "CosyVoice": {
+          "fake": 2000
+        },
+        "DiffSpeech_fastdiff": {
+          "fake": 1999
+        },
+        "FastDiff": {
+          "fake": 1994
+        },
+        "FastPitch_fastdiff": {
+          "fake": 1997
+        },
+        "FastSpeech2_fastdiff": {
+          "fake": 1998
+        },
+        "GlowTTS": {
+          "fake": 2000
+        },
+        "GradTTS": {
+          "fake": 1997
+        },
+        "IndexTTS1": {
+          "fake": 1998
+        },
+        "Kokoro": {
+          "fake": 1998
+        },
+        "Llasa1B": {
+          "fake": 1795
+        },
+        "MelGAN": {
+          "fake": 2000
+        },
+        "MeloTTS": {
+          "fake": 1988
+        },
+        "MusicGen": {
+          "fake": 1204
+        },
+        "MusicLDM": {
+          "fake": 1221
+        },
+        "NeuCoSVC_inhouse": {
+          "fake": 4000
+        },
+        "ParlerTTSmini": {
+          "fake": 1995
+        },
+        "PortaSpeech_normal_fastdiff": {
+          "fake": 1994
+        },
+        "SeedVC": {
+          "fake": 4000
+        },
+        "So-VITS-SVC_inhouse": {
+          "fake": 4000
+        },
+        "Stable Audio open": {
+          "fake": 1223
+        },
+        "StarGANv2VC": {
+          "fake": 1999
+        },
+        "Tacotron2": {
+          "fake": 1998
+        },
+        "Tortoise": {
+          "fake": 1989
+        },
+        "WaveGlow": {
+          "fake": 1997
+        },
+        "WaveNet": {
+          "fake": 2000
+        },
+        "prodiff_teacher_fastdiff": {
+          "fake": 1998
+        }
+      },
+      "type_label_counts": {
+        "music": {
+          "fake": 4870,
+          "real": 536
+        },
+        "singing": {
+          "fake": 12000,
+          "real": 4000
+        },
+        "sound": {
+          "fake": 14989,
+          "real": 4940
+        },
+        "speech": {
+          "fake": 39734,
+          "real": 10000
+        }
+      }
+    },
+    "merged": {
+      "rows": 237850,
+      "label_counts": {
+        "fake": 185224,
+        "real": 52626
+      },
+      "type_counts": {
+        "music": 26772,
+        "singing": 52000,
+        "sound": 59769,
+        "speech": 99309
+      },
+      "generator_counts": {
+        "-": 52626,
+        "AudioLDM": 14992,
+        "AudioLDM2": 20511,
+        "Audiogen": 14983,
+        "CosyVoice": 3835,
+        "DiffSpeech_fastdiff": 3997,
+        "FastDiff": 3990,
+        "FastPitch_fastdiff": 3995,
+        "FastSpeech2_fastdiff": 3996,
+        "GlowTTS": 4000,
+        "GradTTS": 3991,
+        "IndexTTS1": 3995,
+        "Kokoro": 3998,
+        "Llasa1B": 3588,
+        "MelGAN": 3997,
+        "MeloTTS": 3984,
+        "MusicGen": 5416,
+        "MusicLDM": 5497,
+        "NeuCoSVC_inhouse": 13000,
+        "ParlerTTSmini": 3993,
+        "PortaSpeech_normal_fastdiff": 3990,
+        "SeedVC": 13000,
+        "So-VITS-SVC_inhouse": 13000,
+        "Stable Audio open": 5515,
+        "StarGANv2VC": 3998,
+        "Tacotron2": 3992,
+        "Tortoise": 3981,
+        "WaveGlow": 3994,
+        "WaveNet": 3999,
+        "prodiff_teacher_fastdiff": 3997
+      },
+      "generator_label_counts": {
+        "-": {
+          "real": 52626
+        },
+        "AudioLDM": {
+          "fake": 14992
+        },
+        "AudioLDM2": {
+          "fake": 20511
+        },
+        "Audiogen": {
+          "fake": 14983
+        },
+        "CosyVoice": {
+          "fake": 3835
+        },
+        "DiffSpeech_fastdiff": {
+          "fake": 3997
+        },
+        "FastDiff": {
+          "fake": 3990
+        },
+        "FastPitch_fastdiff": {
+          "fake": 3995
+        },
+        "FastSpeech2_fastdiff": {
+          "fake": 3996
+        },
+        "GlowTTS": {
+          "fake": 4000
+        },
+        "GradTTS": {
+          "fake": 3991
+        },
+        "IndexTTS1": {
+          "fake": 3995
+        },
+        "Kokoro": {
+          "fake": 3998
+        },
+        "Llasa1B": {
+          "fake": 3588
+        },
+        "MelGAN": {
+          "fake": 3997
+        },
+        "MeloTTS": {
+          "fake": 3984
+        },
+        "MusicGen": {
+          "fake": 5416
+        },
+        "MusicLDM": {
+          "fake": 5497
+        },
+        "NeuCoSVC_inhouse": {
+          "fake": 13000
+        },
+        "ParlerTTSmini": {
+          "fake": 3993
+        },
+        "PortaSpeech_normal_fastdiff": {
+          "fake": 3990
+        },
+        "SeedVC": {
+          "fake": 13000
+        },
+        "So-VITS-SVC_inhouse": {
+          "fake": 13000
+        },
+        "Stable Audio open": {
+          "fake": 5515
+        },
+        "StarGANv2VC": {
+          "fake": 3998
+        },
+        "Tacotron2": {
+          "fake": 3992
+        },
+        "Tortoise": {
+          "fake": 3981
+        },
+        "WaveGlow": {
+          "fake": 3994
+        },
+        "WaveNet": {
+          "fake": 3999
+        },
+        "prodiff_teacher_fastdiff": {
+          "fake": 3997
+        }
+      },
+      "type_label_counts": {
+        "music": {
+          "fake": 21939,
+          "real": 4833
+        },
+        "singing": {
+          "fake": 39000,
+          "real": 13000
+        },
+        "sound": {
+          "fake": 44975,
+          "real": 14794
+        },
+        "speech": {
+          "fake": 79310,
+          "real": 19999
+        }
+      }
+    }
+  },
+  "output_files": {
+    "fold_dir_pattern": "fold_{i}/",
+    "train": "train_random.csv",
+    "val": "val_random.csv",
+    "configs_dir": "configs/",
+    "meta": "split_meta.json"
+  },
+  "folds": {
+    "fold_0": {
+      "train": {
+        "rows": 190269,
+        "label_counts": {
+          "fake": 148169,
+          "real": 42100
+        },
+        "type_counts": {
+          "music": 21406,
+          "singing": 41598,
+          "sound": 47706,
+          "speech": 79559
+        },
+        "generator_counts": {
+          "-": 42100,
+          "AudioLDM": 11993,
+          "AudioLDM2": 16408,
+          "Audiogen": 11986,
+          "CosyVoice": 3068,
+          "DiffSpeech_fastdiff": 3197,
+          "FastDiff": 3192,
+          "FastPitch_fastdiff": 3196,
+          "FastSpeech2_fastdiff": 3196,
+          "GlowTTS": 3200,
+          "GradTTS": 3192,
+          "IndexTTS1": 3196,
+          "Kokoro": 3198,
+          "Llasa1B": 2870,
+          "MelGAN": 3197,
+          "MeloTTS": 3187,
+          "MusicGen": 4332,
+          "MusicLDM": 4397,
+          "NeuCoSVC_inhouse": 10400,
+          "ParlerTTSmini": 3194,
+          "PortaSpeech_normal_fastdiff": 3192,
+          "SeedVC": 10400,
+          "So-VITS-SVC_inhouse": 10400,
+          "Stable Audio open": 4412,
+          "StarGANv2VC": 3198,
+          "Tacotron2": 3193,
+          "Tortoise": 3184,
+          "WaveGlow": 3195,
+          "WaveNet": 3199,
+          "prodiff_teacher_fastdiff": 3197
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 42100
+          },
+          "AudioLDM": {
+            "fake": 11993
+          },
+          "AudioLDM2": {
+            "fake": 16408
+          },
+          "Audiogen": {
+            "fake": 11986
+          },
+          "CosyVoice": {
+            "fake": 3068
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 3197
+          },
+          "FastDiff": {
+            "fake": 3192
+          },
+          "FastPitch_fastdiff": {
+            "fake": 3196
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 3196
+          },
+          "GlowTTS": {
+            "fake": 3200
+          },
+          "GradTTS": {
+            "fake": 3192
+          },
+          "IndexTTS1": {
+            "fake": 3196
+          },
+          "Kokoro": {
+            "fake": 3198
+          },
+          "Llasa1B": {
+            "fake": 2870
+          },
+          "MelGAN": {
+            "fake": 3197
+          },
+          "MeloTTS": {
+            "fake": 3187
+          },
+          "MusicGen": {
+            "fake": 4332
+          },
+          "MusicLDM": {
+            "fake": 4397
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 10400
+          },
+          "ParlerTTSmini": {
+            "fake": 3194
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 3192
+          },
+          "SeedVC": {
+            "fake": 10400
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 10400
+          },
+          "Stable Audio open": {
+            "fake": 4412
+          },
+          "StarGANv2VC": {
+            "fake": 3198
+          },
+          "Tacotron2": {
+            "fake": 3193
+          },
+          "Tortoise": {
+            "fake": 3184
+          },
+          "WaveGlow": {
+            "fake": 3195
+          },
+          "WaveNet": {
+            "fake": 3199
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 3197
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 17550,
+            "real": 3856
+          },
+          "singing": {
+            "fake": 31200,
+            "real": 10398
+          },
+          "sound": {
+            "fake": 35978,
+            "real": 11728
+          },
+          "speech": {
+            "fake": 63441,
+            "real": 16118
+          }
+        }
+      },
+      "val": {
+        "rows": 47581,
+        "label_counts": {
+          "fake": 37055,
+          "real": 10526
+        },
+        "type_counts": {
+          "music": 5366,
+          "singing": 10402,
+          "sound": 12063,
+          "speech": 19750
+        },
+        "generator_counts": {
+          "-": 10526,
+          "AudioLDM": 2999,
+          "AudioLDM2": 4103,
+          "Audiogen": 2997,
+          "CosyVoice": 767,
+          "DiffSpeech_fastdiff": 800,
+          "FastDiff": 798,
+          "FastPitch_fastdiff": 799,
+          "FastSpeech2_fastdiff": 800,
+          "GlowTTS": 800,
+          "GradTTS": 799,
+          "IndexTTS1": 799,
+          "Kokoro": 800,
+          "Llasa1B": 718,
+          "MelGAN": 800,
+          "MeloTTS": 797,
+          "MusicGen": 1084,
+          "MusicLDM": 1100,
+          "NeuCoSVC_inhouse": 2600,
+          "ParlerTTSmini": 799,
+          "PortaSpeech_normal_fastdiff": 798,
+          "SeedVC": 2600,
+          "So-VITS-SVC_inhouse": 2600,
+          "Stable Audio open": 1103,
+          "StarGANv2VC": 800,
+          "Tacotron2": 799,
+          "Tortoise": 797,
+          "WaveGlow": 799,
+          "WaveNet": 800,
+          "prodiff_teacher_fastdiff": 800
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 10526
+          },
+          "AudioLDM": {
+            "fake": 2999
+          },
+          "AudioLDM2": {
+            "fake": 4103
+          },
+          "Audiogen": {
+            "fake": 2997
+          },
+          "CosyVoice": {
+            "fake": 767
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 800
+          },
+          "FastDiff": {
+            "fake": 798
+          },
+          "FastPitch_fastdiff": {
+            "fake": 799
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 800
+          },
+          "GlowTTS": {
+            "fake": 800
+          },
+          "GradTTS": {
+            "fake": 799
+          },
+          "IndexTTS1": {
+            "fake": 799
+          },
+          "Kokoro": {
+            "fake": 800
+          },
+          "Llasa1B": {
+            "fake": 718
+          },
+          "MelGAN": {
+            "fake": 800
+          },
+          "MeloTTS": {
+            "fake": 797
+          },
+          "MusicGen": {
+            "fake": 1084
+          },
+          "MusicLDM": {
+            "fake": 1100
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 2600
+          },
+          "ParlerTTSmini": {
+            "fake": 799
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 798
+          },
+          "SeedVC": {
+            "fake": 2600
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 2600
+          },
+          "Stable Audio open": {
+            "fake": 1103
+          },
+          "StarGANv2VC": {
+            "fake": 800
+          },
+          "Tacotron2": {
+            "fake": 799
+          },
+          "Tortoise": {
+            "fake": 797
+          },
+          "WaveGlow": {
+            "fake": 799
+          },
+          "WaveNet": {
+            "fake": 800
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 800
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 4389,
+            "real": 977
+          },
+          "singing": {
+            "fake": 7800,
+            "real": 2602
+          },
+          "sound": {
+            "fake": 8997,
+            "real": 3066
+          },
+          "speech": {
+            "fake": 15869,
+            "real": 3881
+          }
+        }
+      },
+      "files": {
+        "train": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_0/train_random.csv",
+        "val": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_0/val_random.csv",
+        "config": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/configs/fold_0.yaml"
+      }
+    },
+    "fold_1": {
+      "train": {
+        "rows": 190275,
+        "label_counts": {
+          "fake": 148174,
+          "real": 42101
+        },
+        "type_counts": {
+          "music": 21407,
+          "singing": 41607,
+          "sound": 47829,
+          "speech": 79432
+        },
+        "generator_counts": {
+          "-": 42101,
+          "AudioLDM": 11993,
+          "AudioLDM2": 16409,
+          "Audiogen": 11986,
+          "CosyVoice": 3068,
+          "DiffSpeech_fastdiff": 3197,
+          "FastDiff": 3192,
+          "FastPitch_fastdiff": 3196,
+          "FastSpeech2_fastdiff": 3197,
+          "GlowTTS": 3200,
+          "GradTTS": 3193,
+          "IndexTTS1": 3196,
+          "Kokoro": 3198,
+          "Llasa1B": 2870,
+          "MelGAN": 3197,
+          "MeloTTS": 3187,
+          "MusicGen": 4333,
+          "MusicLDM": 4397,
+          "NeuCoSVC_inhouse": 10400,
+          "ParlerTTSmini": 3194,
+          "PortaSpeech_normal_fastdiff": 3192,
+          "SeedVC": 10400,
+          "So-VITS-SVC_inhouse": 10400,
+          "Stable Audio open": 4412,
+          "StarGANv2VC": 3198,
+          "Tacotron2": 3193,
+          "Tortoise": 3185,
+          "WaveGlow": 3195,
+          "WaveNet": 3199,
+          "prodiff_teacher_fastdiff": 3197
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 42101
+          },
+          "AudioLDM": {
+            "fake": 11993
+          },
+          "AudioLDM2": {
+            "fake": 16409
+          },
+          "Audiogen": {
+            "fake": 11986
+          },
+          "CosyVoice": {
+            "fake": 3068
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 3197
+          },
+          "FastDiff": {
+            "fake": 3192
+          },
+          "FastPitch_fastdiff": {
+            "fake": 3196
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 3197
+          },
+          "GlowTTS": {
+            "fake": 3200
+          },
+          "GradTTS": {
+            "fake": 3193
+          },
+          "IndexTTS1": {
+            "fake": 3196
+          },
+          "Kokoro": {
+            "fake": 3198
+          },
+          "Llasa1B": {
+            "fake": 2870
+          },
+          "MelGAN": {
+            "fake": 3197
+          },
+          "MeloTTS": {
+            "fake": 3187
+          },
+          "MusicGen": {
+            "fake": 4333
+          },
+          "MusicLDM": {
+            "fake": 4397
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 10400
+          },
+          "ParlerTTSmini": {
+            "fake": 3194
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 3192
+          },
+          "SeedVC": {
+            "fake": 10400
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 10400
+          },
+          "Stable Audio open": {
+            "fake": 4412
+          },
+          "StarGANv2VC": {
+            "fake": 3198
+          },
+          "Tacotron2": {
+            "fake": 3193
+          },
+          "Tortoise": {
+            "fake": 3185
+          },
+          "WaveGlow": {
+            "fake": 3195
+          },
+          "WaveNet": {
+            "fake": 3199
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 3197
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 17525,
+            "real": 3882
+          },
+          "singing": {
+            "fake": 31200,
+            "real": 10407
+          },
+          "sound": {
+            "fake": 36005,
+            "real": 11824
+          },
+          "speech": {
+            "fake": 63444,
+            "real": 15988
+          }
+        }
+      },
+      "val": {
+        "rows": 47575,
+        "label_counts": {
+          "fake": 37050,
+          "real": 10525
+        },
+        "type_counts": {
+          "music": 5365,
+          "singing": 10393,
+          "sound": 11940,
+          "speech": 19877
+        },
+        "generator_counts": {
+          "-": 10525,
+          "AudioLDM": 2999,
+          "AudioLDM2": 4102,
+          "Audiogen": 2997,
+          "CosyVoice": 767,
+          "DiffSpeech_fastdiff": 800,
+          "FastDiff": 798,
+          "FastPitch_fastdiff": 799,
+          "FastSpeech2_fastdiff": 799,
+          "GlowTTS": 800,
+          "GradTTS": 798,
+          "IndexTTS1": 799,
+          "Kokoro": 800,
+          "Llasa1B": 718,
+          "MelGAN": 800,
+          "MeloTTS": 797,
+          "MusicGen": 1083,
+          "MusicLDM": 1100,
+          "NeuCoSVC_inhouse": 2600,
+          "ParlerTTSmini": 799,
+          "PortaSpeech_normal_fastdiff": 798,
+          "SeedVC": 2600,
+          "So-VITS-SVC_inhouse": 2600,
+          "Stable Audio open": 1103,
+          "StarGANv2VC": 800,
+          "Tacotron2": 799,
+          "Tortoise": 796,
+          "WaveGlow": 799,
+          "WaveNet": 800,
+          "prodiff_teacher_fastdiff": 800
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 10525
+          },
+          "AudioLDM": {
+            "fake": 2999
+          },
+          "AudioLDM2": {
+            "fake": 4102
+          },
+          "Audiogen": {
+            "fake": 2997
+          },
+          "CosyVoice": {
+            "fake": 767
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 800
+          },
+          "FastDiff": {
+            "fake": 798
+          },
+          "FastPitch_fastdiff": {
+            "fake": 799
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 799
+          },
+          "GlowTTS": {
+            "fake": 800
+          },
+          "GradTTS": {
+            "fake": 798
+          },
+          "IndexTTS1": {
+            "fake": 799
+          },
+          "Kokoro": {
+            "fake": 800
+          },
+          "Llasa1B": {
+            "fake": 718
+          },
+          "MelGAN": {
+            "fake": 800
+          },
+          "MeloTTS": {
+            "fake": 797
+          },
+          "MusicGen": {
+            "fake": 1083
+          },
+          "MusicLDM": {
+            "fake": 1100
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 2600
+          },
+          "ParlerTTSmini": {
+            "fake": 799
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 798
+          },
+          "SeedVC": {
+            "fake": 2600
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 2600
+          },
+          "Stable Audio open": {
+            "fake": 1103
+          },
+          "StarGANv2VC": {
+            "fake": 800
+          },
+          "Tacotron2": {
+            "fake": 799
+          },
+          "Tortoise": {
+            "fake": 796
+          },
+          "WaveGlow": {
+            "fake": 799
+          },
+          "WaveNet": {
+            "fake": 800
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 800
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 4414,
+            "real": 951
+          },
+          "singing": {
+            "fake": 7800,
+            "real": 2593
+          },
+          "sound": {
+            "fake": 8970,
+            "real": 2970
+          },
+          "speech": {
+            "fake": 15866,
+            "real": 4011
+          }
+        }
+      },
+      "files": {
+        "train": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_1/train_random.csv",
+        "val": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_1/val_random.csv",
+        "config": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/configs/fold_1.yaml"
+      }
+    },
+    "fold_2": {
+      "train": {
+        "rows": 190281,
+        "label_counts": {
+          "fake": 148180,
+          "real": 42101
+        },
+        "type_counts": {
+          "music": 21406,
+          "singing": 41675,
+          "sound": 47784,
+          "speech": 79416
+        },
+        "generator_counts": {
+          "-": 42101,
+          "AudioLDM": 11994,
+          "AudioLDM2": 16409,
+          "Audiogen": 11986,
+          "CosyVoice": 3068,
+          "DiffSpeech_fastdiff": 3198,
+          "FastDiff": 3192,
+          "FastPitch_fastdiff": 3196,
+          "FastSpeech2_fastdiff": 3197,
+          "GlowTTS": 3200,
+          "GradTTS": 3193,
+          "IndexTTS1": 3196,
+          "Kokoro": 3198,
+          "Llasa1B": 2870,
+          "MelGAN": 3198,
+          "MeloTTS": 3187,
+          "MusicGen": 4333,
+          "MusicLDM": 4398,
+          "NeuCoSVC_inhouse": 10400,
+          "ParlerTTSmini": 3194,
+          "PortaSpeech_normal_fastdiff": 3192,
+          "SeedVC": 10400,
+          "So-VITS-SVC_inhouse": 10400,
+          "Stable Audio open": 4412,
+          "StarGANv2VC": 3198,
+          "Tacotron2": 3194,
+          "Tortoise": 3185,
+          "WaveGlow": 3195,
+          "WaveNet": 3199,
+          "prodiff_teacher_fastdiff": 3198
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 42101
+          },
+          "AudioLDM": {
+            "fake": 11994
+          },
+          "AudioLDM2": {
+            "fake": 16409
+          },
+          "Audiogen": {
+            "fake": 11986
+          },
+          "CosyVoice": {
+            "fake": 3068
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 3198
+          },
+          "FastDiff": {
+            "fake": 3192
+          },
+          "FastPitch_fastdiff": {
+            "fake": 3196
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 3197
+          },
+          "GlowTTS": {
+            "fake": 3200
+          },
+          "GradTTS": {
+            "fake": 3193
+          },
+          "IndexTTS1": {
+            "fake": 3196
+          },
+          "Kokoro": {
+            "fake": 3198
+          },
+          "Llasa1B": {
+            "fake": 2870
+          },
+          "MelGAN": {
+            "fake": 3198
+          },
+          "MeloTTS": {
+            "fake": 3187
+          },
+          "MusicGen": {
+            "fake": 4333
+          },
+          "MusicLDM": {
+            "fake": 4398
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 10400
+          },
+          "ParlerTTSmini": {
+            "fake": 3194
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 3192
+          },
+          "SeedVC": {
+            "fake": 10400
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 10400
+          },
+          "Stable Audio open": {
+            "fake": 4412
+          },
+          "StarGANv2VC": {
+            "fake": 3198
+          },
+          "Tacotron2": {
+            "fake": 3194
+          },
+          "Tortoise": {
+            "fake": 3185
+          },
+          "WaveGlow": {
+            "fake": 3195
+          },
+          "WaveNet": {
+            "fake": 3199
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 3198
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 17572,
+            "real": 3834
+          },
+          "singing": {
+            "fake": 31200,
+            "real": 10475
+          },
+          "sound": {
+            "fake": 35960,
+            "real": 11824
+          },
+          "speech": {
+            "fake": 63448,
+            "real": 15968
+          }
+        }
+      },
+      "val": {
+        "rows": 47569,
+        "label_counts": {
+          "fake": 37044,
+          "real": 10525
+        },
+        "type_counts": {
+          "music": 5366,
+          "singing": 10325,
+          "sound": 11985,
+          "speech": 19893
+        },
+        "generator_counts": {
+          "-": 10525,
+          "AudioLDM": 2998,
+          "AudioLDM2": 4102,
+          "Audiogen": 2997,
+          "CosyVoice": 767,
+          "DiffSpeech_fastdiff": 799,
+          "FastDiff": 798,
+          "FastPitch_fastdiff": 799,
+          "FastSpeech2_fastdiff": 799,
+          "GlowTTS": 800,
+          "GradTTS": 798,
+          "IndexTTS1": 799,
+          "Kokoro": 800,
+          "Llasa1B": 718,
+          "MelGAN": 799,
+          "MeloTTS": 797,
+          "MusicGen": 1083,
+          "MusicLDM": 1099,
+          "NeuCoSVC_inhouse": 2600,
+          "ParlerTTSmini": 799,
+          "PortaSpeech_normal_fastdiff": 798,
+          "SeedVC": 2600,
+          "So-VITS-SVC_inhouse": 2600,
+          "Stable Audio open": 1103,
+          "StarGANv2VC": 800,
+          "Tacotron2": 798,
+          "Tortoise": 796,
+          "WaveGlow": 799,
+          "WaveNet": 800,
+          "prodiff_teacher_fastdiff": 799
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 10525
+          },
+          "AudioLDM": {
+            "fake": 2998
+          },
+          "AudioLDM2": {
+            "fake": 4102
+          },
+          "Audiogen": {
+            "fake": 2997
+          },
+          "CosyVoice": {
+            "fake": 767
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 799
+          },
+          "FastDiff": {
+            "fake": 798
+          },
+          "FastPitch_fastdiff": {
+            "fake": 799
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 799
+          },
+          "GlowTTS": {
+            "fake": 800
+          },
+          "GradTTS": {
+            "fake": 798
+          },
+          "IndexTTS1": {
+            "fake": 799
+          },
+          "Kokoro": {
+            "fake": 800
+          },
+          "Llasa1B": {
+            "fake": 718
+          },
+          "MelGAN": {
+            "fake": 799
+          },
+          "MeloTTS": {
+            "fake": 797
+          },
+          "MusicGen": {
+            "fake": 1083
+          },
+          "MusicLDM": {
+            "fake": 1099
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 2600
+          },
+          "ParlerTTSmini": {
+            "fake": 799
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 798
+          },
+          "SeedVC": {
+            "fake": 2600
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 2600
+          },
+          "Stable Audio open": {
+            "fake": 1103
+          },
+          "StarGANv2VC": {
+            "fake": 800
+          },
+          "Tacotron2": {
+            "fake": 798
+          },
+          "Tortoise": {
+            "fake": 796
+          },
+          "WaveGlow": {
+            "fake": 799
+          },
+          "WaveNet": {
+            "fake": 800
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 799
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 4367,
+            "real": 999
+          },
+          "singing": {
+            "fake": 7800,
+            "real": 2525
+          },
+          "sound": {
+            "fake": 9015,
+            "real": 2970
+          },
+          "speech": {
+            "fake": 15862,
+            "real": 4031
+          }
+        }
+      },
+      "files": {
+        "train": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_2/train_random.csv",
+        "val": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_2/val_random.csv",
+        "config": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/configs/fold_2.yaml"
+      }
+    },
+    "fold_3": {
+      "train": {
+        "rows": 190286,
+        "label_counts": {
+          "fake": 148185,
+          "real": 42101
+        },
+        "type_counts": {
+          "music": 21395,
+          "singing": 41539,
+          "sound": 47880,
+          "speech": 79472
+        },
+        "generator_counts": {
+          "-": 42101,
+          "AudioLDM": 11994,
+          "AudioLDM2": 16409,
+          "Audiogen": 11987,
+          "CosyVoice": 3068,
+          "DiffSpeech_fastdiff": 3198,
+          "FastDiff": 3192,
+          "FastPitch_fastdiff": 3196,
+          "FastSpeech2_fastdiff": 3197,
+          "GlowTTS": 3200,
+          "GradTTS": 3193,
+          "IndexTTS1": 3196,
+          "Kokoro": 3199,
+          "Llasa1B": 2871,
+          "MelGAN": 3198,
+          "MeloTTS": 3187,
+          "MusicGen": 4333,
+          "MusicLDM": 4398,
+          "NeuCoSVC_inhouse": 10400,
+          "ParlerTTSmini": 3195,
+          "PortaSpeech_normal_fastdiff": 3192,
+          "SeedVC": 10400,
+          "So-VITS-SVC_inhouse": 10400,
+          "Stable Audio open": 4412,
+          "StarGANv2VC": 3199,
+          "Tacotron2": 3194,
+          "Tortoise": 3185,
+          "WaveGlow": 3195,
+          "WaveNet": 3199,
+          "prodiff_teacher_fastdiff": 3198
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 42101
+          },
+          "AudioLDM": {
+            "fake": 11994
+          },
+          "AudioLDM2": {
+            "fake": 16409
+          },
+          "Audiogen": {
+            "fake": 11987
+          },
+          "CosyVoice": {
+            "fake": 3068
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 3198
+          },
+          "FastDiff": {
+            "fake": 3192
+          },
+          "FastPitch_fastdiff": {
+            "fake": 3196
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 3197
+          },
+          "GlowTTS": {
+            "fake": 3200
+          },
+          "GradTTS": {
+            "fake": 3193
+          },
+          "IndexTTS1": {
+            "fake": 3196
+          },
+          "Kokoro": {
+            "fake": 3199
+          },
+          "Llasa1B": {
+            "fake": 2871
+          },
+          "MelGAN": {
+            "fake": 3198
+          },
+          "MeloTTS": {
+            "fake": 3187
+          },
+          "MusicGen": {
+            "fake": 4333
+          },
+          "MusicLDM": {
+            "fake": 4398
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 10400
+          },
+          "ParlerTTSmini": {
+            "fake": 3195
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 3192
+          },
+          "SeedVC": {
+            "fake": 10400
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 10400
+          },
+          "Stable Audio open": {
+            "fake": 4412
+          },
+          "StarGANv2VC": {
+            "fake": 3199
+          },
+          "Tacotron2": {
+            "fake": 3194
+          },
+          "Tortoise": {
+            "fake": 3185
+          },
+          "WaveGlow": {
+            "fake": 3195
+          },
+          "WaveNet": {
+            "fake": 3199
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 3198
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 17549,
+            "real": 3846
+          },
+          "singing": {
+            "fake": 31200,
+            "real": 10339
+          },
+          "sound": {
+            "fake": 35984,
+            "real": 11896
+          },
+          "speech": {
+            "fake": 63452,
+            "real": 16020
+          }
+        }
+      },
+      "val": {
+        "rows": 47564,
+        "label_counts": {
+          "fake": 37039,
+          "real": 10525
+        },
+        "type_counts": {
+          "music": 5377,
+          "singing": 10461,
+          "sound": 11889,
+          "speech": 19837
+        },
+        "generator_counts": {
+          "-": 10525,
+          "AudioLDM": 2998,
+          "AudioLDM2": 4102,
+          "Audiogen": 2996,
+          "CosyVoice": 767,
+          "DiffSpeech_fastdiff": 799,
+          "FastDiff": 798,
+          "FastPitch_fastdiff": 799,
+          "FastSpeech2_fastdiff": 799,
+          "GlowTTS": 800,
+          "GradTTS": 798,
+          "IndexTTS1": 799,
+          "Kokoro": 799,
+          "Llasa1B": 717,
+          "MelGAN": 799,
+          "MeloTTS": 797,
+          "MusicGen": 1083,
+          "MusicLDM": 1099,
+          "NeuCoSVC_inhouse": 2600,
+          "ParlerTTSmini": 798,
+          "PortaSpeech_normal_fastdiff": 798,
+          "SeedVC": 2600,
+          "So-VITS-SVC_inhouse": 2600,
+          "Stable Audio open": 1103,
+          "StarGANv2VC": 799,
+          "Tacotron2": 798,
+          "Tortoise": 796,
+          "WaveGlow": 799,
+          "WaveNet": 800,
+          "prodiff_teacher_fastdiff": 799
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 10525
+          },
+          "AudioLDM": {
+            "fake": 2998
+          },
+          "AudioLDM2": {
+            "fake": 4102
+          },
+          "Audiogen": {
+            "fake": 2996
+          },
+          "CosyVoice": {
+            "fake": 767
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 799
+          },
+          "FastDiff": {
+            "fake": 798
+          },
+          "FastPitch_fastdiff": {
+            "fake": 799
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 799
+          },
+          "GlowTTS": {
+            "fake": 800
+          },
+          "GradTTS": {
+            "fake": 798
+          },
+          "IndexTTS1": {
+            "fake": 799
+          },
+          "Kokoro": {
+            "fake": 799
+          },
+          "Llasa1B": {
+            "fake": 717
+          },
+          "MelGAN": {
+            "fake": 799
+          },
+          "MeloTTS": {
+            "fake": 797
+          },
+          "MusicGen": {
+            "fake": 1083
+          },
+          "MusicLDM": {
+            "fake": 1099
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 2600
+          },
+          "ParlerTTSmini": {
+            "fake": 798
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 798
+          },
+          "SeedVC": {
+            "fake": 2600
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 2600
+          },
+          "Stable Audio open": {
+            "fake": 1103
+          },
+          "StarGANv2VC": {
+            "fake": 799
+          },
+          "Tacotron2": {
+            "fake": 798
+          },
+          "Tortoise": {
+            "fake": 796
+          },
+          "WaveGlow": {
+            "fake": 799
+          },
+          "WaveNet": {
+            "fake": 800
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 799
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 4390,
+            "real": 987
+          },
+          "singing": {
+            "fake": 7800,
+            "real": 2661
+          },
+          "sound": {
+            "fake": 8991,
+            "real": 2898
+          },
+          "speech": {
+            "fake": 15858,
+            "real": 3979
+          }
+        }
+      },
+      "files": {
+        "train": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_3/train_random.csv",
+        "val": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_3/val_random.csv",
+        "config": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/configs/fold_3.yaml"
+      }
+    },
+    "fold_4": {
+      "train": {
+        "rows": 190289,
+        "label_counts": {
+          "fake": 148188,
+          "real": 42101
+        },
+        "type_counts": {
+          "music": 21474,
+          "singing": 41581,
+          "sound": 47877,
+          "speech": 79357
+        },
+        "generator_counts": {
+          "-": 42101,
+          "AudioLDM": 11994,
+          "AudioLDM2": 16409,
+          "Audiogen": 11987,
+          "CosyVoice": 3068,
+          "DiffSpeech_fastdiff": 3198,
+          "FastDiff": 3192,
+          "FastPitch_fastdiff": 3196,
+          "FastSpeech2_fastdiff": 3197,
+          "GlowTTS": 3200,
+          "GradTTS": 3193,
+          "IndexTTS1": 3196,
+          "Kokoro": 3199,
+          "Llasa1B": 2871,
+          "MelGAN": 3198,
+          "MeloTTS": 3188,
+          "MusicGen": 4333,
+          "MusicLDM": 4398,
+          "NeuCoSVC_inhouse": 10400,
+          "ParlerTTSmini": 3195,
+          "PortaSpeech_normal_fastdiff": 3192,
+          "SeedVC": 10400,
+          "So-VITS-SVC_inhouse": 10400,
+          "Stable Audio open": 4412,
+          "StarGANv2VC": 3199,
+          "Tacotron2": 3194,
+          "Tortoise": 3185,
+          "WaveGlow": 3196,
+          "WaveNet": 3200,
+          "prodiff_teacher_fastdiff": 3198
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 42101
+          },
+          "AudioLDM": {
+            "fake": 11994
+          },
+          "AudioLDM2": {
+            "fake": 16409
+          },
+          "Audiogen": {
+            "fake": 11987
+          },
+          "CosyVoice": {
+            "fake": 3068
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 3198
+          },
+          "FastDiff": {
+            "fake": 3192
+          },
+          "FastPitch_fastdiff": {
+            "fake": 3196
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 3197
+          },
+          "GlowTTS": {
+            "fake": 3200
+          },
+          "GradTTS": {
+            "fake": 3193
+          },
+          "IndexTTS1": {
+            "fake": 3196
+          },
+          "Kokoro": {
+            "fake": 3199
+          },
+          "Llasa1B": {
+            "fake": 2871
+          },
+          "MelGAN": {
+            "fake": 3198
+          },
+          "MeloTTS": {
+            "fake": 3188
+          },
+          "MusicGen": {
+            "fake": 4333
+          },
+          "MusicLDM": {
+            "fake": 4398
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 10400
+          },
+          "ParlerTTSmini": {
+            "fake": 3195
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 3192
+          },
+          "SeedVC": {
+            "fake": 10400
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 10400
+          },
+          "Stable Audio open": {
+            "fake": 4412
+          },
+          "StarGANv2VC": {
+            "fake": 3199
+          },
+          "Tacotron2": {
+            "fake": 3194
+          },
+          "Tortoise": {
+            "fake": 3185
+          },
+          "WaveGlow": {
+            "fake": 3196
+          },
+          "WaveNet": {
+            "fake": 3200
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 3198
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 17560,
+            "real": 3914
+          },
+          "singing": {
+            "fake": 31200,
+            "real": 10381
+          },
+          "sound": {
+            "fake": 35973,
+            "real": 11904
+          },
+          "speech": {
+            "fake": 63455,
+            "real": 15902
+          }
+        }
+      },
+      "val": {
+        "rows": 47561,
+        "label_counts": {
+          "fake": 37036,
+          "real": 10525
+        },
+        "type_counts": {
+          "music": 5298,
+          "singing": 10419,
+          "sound": 11892,
+          "speech": 19952
+        },
+        "generator_counts": {
+          "-": 10525,
+          "AudioLDM": 2998,
+          "AudioLDM2": 4102,
+          "Audiogen": 2996,
+          "CosyVoice": 767,
+          "DiffSpeech_fastdiff": 799,
+          "FastDiff": 798,
+          "FastPitch_fastdiff": 799,
+          "FastSpeech2_fastdiff": 799,
+          "GlowTTS": 800,
+          "GradTTS": 798,
+          "IndexTTS1": 799,
+          "Kokoro": 799,
+          "Llasa1B": 717,
+          "MelGAN": 799,
+          "MeloTTS": 796,
+          "MusicGen": 1083,
+          "MusicLDM": 1099,
+          "NeuCoSVC_inhouse": 2600,
+          "ParlerTTSmini": 798,
+          "PortaSpeech_normal_fastdiff": 798,
+          "SeedVC": 2600,
+          "So-VITS-SVC_inhouse": 2600,
+          "Stable Audio open": 1103,
+          "StarGANv2VC": 799,
+          "Tacotron2": 798,
+          "Tortoise": 796,
+          "WaveGlow": 798,
+          "WaveNet": 799,
+          "prodiff_teacher_fastdiff": 799
+        },
+        "generator_label_counts": {
+          "-": {
+            "real": 10525
+          },
+          "AudioLDM": {
+            "fake": 2998
+          },
+          "AudioLDM2": {
+            "fake": 4102
+          },
+          "Audiogen": {
+            "fake": 2996
+          },
+          "CosyVoice": {
+            "fake": 767
+          },
+          "DiffSpeech_fastdiff": {
+            "fake": 799
+          },
+          "FastDiff": {
+            "fake": 798
+          },
+          "FastPitch_fastdiff": {
+            "fake": 799
+          },
+          "FastSpeech2_fastdiff": {
+            "fake": 799
+          },
+          "GlowTTS": {
+            "fake": 800
+          },
+          "GradTTS": {
+            "fake": 798
+          },
+          "IndexTTS1": {
+            "fake": 799
+          },
+          "Kokoro": {
+            "fake": 799
+          },
+          "Llasa1B": {
+            "fake": 717
+          },
+          "MelGAN": {
+            "fake": 799
+          },
+          "MeloTTS": {
+            "fake": 796
+          },
+          "MusicGen": {
+            "fake": 1083
+          },
+          "MusicLDM": {
+            "fake": 1099
+          },
+          "NeuCoSVC_inhouse": {
+            "fake": 2600
+          },
+          "ParlerTTSmini": {
+            "fake": 798
+          },
+          "PortaSpeech_normal_fastdiff": {
+            "fake": 798
+          },
+          "SeedVC": {
+            "fake": 2600
+          },
+          "So-VITS-SVC_inhouse": {
+            "fake": 2600
+          },
+          "Stable Audio open": {
+            "fake": 1103
+          },
+          "StarGANv2VC": {
+            "fake": 799
+          },
+          "Tacotron2": {
+            "fake": 798
+          },
+          "Tortoise": {
+            "fake": 796
+          },
+          "WaveGlow": {
+            "fake": 798
+          },
+          "WaveNet": {
+            "fake": 799
+          },
+          "prodiff_teacher_fastdiff": {
+            "fake": 799
+          }
+        },
+        "type_label_counts": {
+          "music": {
+            "fake": 4379,
+            "real": 919
+          },
+          "singing": {
+            "fake": 7800,
+            "real": 2619
+          },
+          "sound": {
+            "fake": 9002,
+            "real": 2890
+          },
+          "speech": {
+            "fake": 15855,
+            "real": 4097
+          }
+        }
+      },
+      "files": {
+        "train": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_4/train_random.csv",
+        "val": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/fold_4/val_random.csv",
+        "config": "/data/liulan/workspace/released_models/AT-ADD-Baseline/protocol_k_fold/configs/fold_4.yaml"
+      }
+    }
+  }
+}

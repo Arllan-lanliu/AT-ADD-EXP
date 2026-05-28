@@ -24,7 +24,9 @@ class XLSR(nn.Module):
         visual=False,
         return_hidden_states=False,
         selected_layers=None,
-        layer_fusion="last",  # "last", "cat_linear", "cat_proj_v1", "cat_proj_v2", "mean", "weight_sum"
+        layer_fusion="last",  # "last", "cat_linear", "cat_proj_v1", "cat_proj_v2", "mean", "weight_sum", "mhfa_fuse"
+        mhfa_compression_dim=None,
+        mhfa_dropout=0.1,
     ):
         super(XLSR, self).__init__()
 
@@ -69,6 +71,7 @@ class XLSR(nn.Module):
             "cat_proj_v2",
             "mean",
             "weight_sum",
+            "mhfa_fuse",
         ):
             if not self.selected_layers:
                 raise ValueError(
@@ -87,6 +90,12 @@ class XLSR(nn.Module):
         self.layer_proj = None
         self.cat_linear_head = None
         self.layer_weights = None
+        self.mhfa_w_k = None
+        self.mhfa_w_v = None
+        self.mhfa_proj_k = None
+        self.mhfa_proj_v = None
+        self.mhfa_dropout = None
+        self.mhfa_fuse_out = None
 
         if lf == "cat_linear" and n_sel > 0:
             self.cat_linear_head = nn.Linear(
@@ -110,6 +119,35 @@ class XLSR(nn.Module):
             )
         elif lf == "weight_sum" and n_sel > 0:
             self.layer_weights = nn.Parameter(torch.zeros(n_sel))
+        elif lf == "mhfa_fuse" and n_sel > 0:
+            D = self.hidden_size
+            D_cmp = mhfa_compression_dim if mhfa_compression_dim is not None else D // 4
+
+            self.mhfa_w_k = nn.Parameter(torch.zeros(n_sel))
+            self.mhfa_w_v = nn.Parameter(torch.zeros(n_sel))
+            self.mhfa_proj_k = nn.Linear(D, D_cmp, bias=False)
+            self.mhfa_proj_v = nn.Linear(D, D_cmp, bias=False)
+            self.mhfa_dropout = nn.Dropout(mhfa_dropout)
+            self.mhfa_fuse_out = nn.Sequential(
+                nn.LayerNorm(D_cmp),
+                nn.Linear(D_cmp, D),
+            )
+
+    def _mhfa_layer_weighted_sums(self, selected):
+        stack = torch.stack(selected, dim=-1)
+        w_k = F.softmax(self.mhfa_w_k, dim=0)
+        w_v = F.softmax(self.mhfa_w_v, dim=0)
+        K_feat = (stack * w_k).sum(dim=-1)
+        V_feat = (stack * w_v).sum(dim=-1)
+        return K_feat, V_feat
+
+    def _mhfa_fuse_forward(self, selected):
+        K_feat, V_feat = self._mhfa_layer_weighted_sums(selected)
+        K = self.mhfa_proj_k(K_feat)
+        V = self.mhfa_proj_v(V_feat)
+        gated = torch.sigmoid(K) * V
+        gated = self.mhfa_dropout(gated)
+        return self.mhfa_fuse_out(gated)
 
     def _fuse_hidden_states(self, outputs):
         last_hidden_state = outputs.last_hidden_state
@@ -174,11 +212,14 @@ class XLSR(nn.Module):
             weights = F.softmax(self.layer_weights, dim=0)
             fused = sum(w * h for w, h in zip(weights, selected))
 
+        elif self.layer_fusion == "mhfa_fuse":
+            fused = self._mhfa_fuse_forward(selected)
+
         else:
             raise ValueError(
                 f"Unsupported layer_fusion={self.layer_fusion}. "
                 "Choose from ['last', 'cat_linear', 'cat_proj_v1', 'cat_proj_v2', "
-                "'mean', 'weight_sum']."
+                "'mean', 'weight_sum', 'mhfa_fuse']."
             )
 
         return fused, hidden_states

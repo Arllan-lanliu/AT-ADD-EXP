@@ -429,19 +429,20 @@ class AASIST(nn.Module):
 
         self.out_layer = nn.Linear(5 * gat_dims[1], 2)
 
-    def forward(self, x): # (bs, feat_dim, frame_number)
+    def forward(self, x): # (bs, frame_number, feat_dim, )
 
-        x = x.squeeze(dim=1) # (bs, feat_dim, frame_number)
+        x = x.squeeze(dim=1) # (bs, frame_number, feat_dim)
 
         x = self.LL(x)
         x = x.transpose(1, 2)  # (bs,feat_out_dim,frame_number)
         x = x.unsqueeze(dim=1)  # add channel
-        x = F.max_pool2d(x, (3, 3))
-        x = self.first_bn(x)
-        x = self.selu(x)
+        # x shape: (bs, 1, feat_out_dim, frame_number)
+        x = F.max_pool2d(x, (3, 3)) # x shape: (bs, 1, feat_out_dim//3, frame_number//3)
+        x = self.first_bn(x) # x shape: (bs, 1, feat_out_dim//3, frame_number//3)
+        x = self.selu(x) # x shape: (bs, 1, feat_out_dim//3, frame_number//3)
 
         # RawNet2-based encoder
-        x = self.encoder(x)
+        x = self.encoder(x) 
         x = self.first_bn1(x)
         x = self.selu(x)
 

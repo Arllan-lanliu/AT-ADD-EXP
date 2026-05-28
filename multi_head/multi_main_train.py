@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import heapq
 import json
 import math
 import os
@@ -77,6 +76,7 @@ except ImportError:
     wandb = None
 
 TYPE_NAME_TO_IDX = {"speech": 0, "sound": 1, "singing": 2, "music": 3}
+IDX_TO_TYPE = {v: k for k, v in TYPE_NAME_TO_IDX.items()}
 
 
 def _gen_binary_submission(score_file: str, binary_file: str, threshold: float = 0.5) -> None:
@@ -127,6 +127,7 @@ def load_mult_namespace(yaml_path: str) -> argparse.Namespace:
     flat.setdefault("gpu", "0")
     flat.setdefault("specialist_weight", 0.7)
     flat.setdefault("total_weight", 0.3)
+    flat.setdefault("label_loss", None)
     flat.setdefault("freeze_backbone", False)
     flat.setdefault("train_task", "atadd-track2")
     flat.setdefault("num_epochs", 100)
@@ -149,6 +150,9 @@ def load_mult_namespace(yaml_path: str) -> argparse.Namespace:
     flat.setdefault("eval_strategy", "oracle")
     flat.setdefault("ssl_backbone", "xlsr")
     flat.setdefault("backbone_dim", None)
+    flat.setdefault("sound_aug_methods", ["rawboost", "musan_noise", "rir_reverb"])
+    flat.setdefault("rir_path", "/data/liulan/workspace/dataset/RIRS_NOISES")
+    flat.setdefault("musan_path", "/data/liulan/workspace/dataset/musan")
     return argparse.Namespace(**flat)
 
 
@@ -197,6 +201,9 @@ def _dataloaders(args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
         filter_types=ft,
         aug_probs=aug_probs,
         music_aug_method=args.music_aug_method,
+        sound_aug_methods=args.sound_aug_methods,
+        rir_path=args.rir_path,
+        musan_path=args.musan_path,
     )
     sample_ds = atadd_dataset(
         args.atadd_t2_dev_audio,
@@ -239,8 +246,25 @@ def _full_dev_loader(args: argparse.Namespace) -> DataLoader:
     )
 
 
-def _class_weight(train_task: str, device: torch.device) -> torch.Tensor:
-    w = [4.0, 1.0] if train_task == "atadd-track1" else [3.5, 1.0]
+def _class_weight(args: argparse.Namespace, device: torch.device) -> torch.Tensor:
+    custom = getattr(args, "label_loss", None)
+    if custom is None:
+        custom = getattr(args, "label_loss_weight", None)
+
+    if custom is None:
+        train_task = str(getattr(args, "train_task", "atadd-track2"))
+        w = [4.0, 1.0] if train_task == "atadd-track1" else [3.5, 1.0]
+    elif isinstance(custom, dict):
+        try:
+            w = [float(custom["real"]), float(custom["fake"])]
+        except KeyError as exc:
+            raise ValueError("label_loss mapping must contain 'real' and 'fake'.") from exc
+    elif isinstance(custom, (list, tuple)) and len(custom) == 2:
+        w = [float(custom[0]), float(custom[1])]
+    else:
+        raise ValueError(
+            "label_loss must be [real_weight, fake_weight] or {real: ..., fake: ...}."
+        )
     return torch.tensor(w, dtype=torch.float32, device=device)
 
 
@@ -254,6 +278,63 @@ def _scores_to_metrics(
     preds = (scores < thr).astype(np.int64)
     f1 = f1_score(labels_np, preds, average="macro")
     return float(eer), float(f1), thr
+
+
+def _binary_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    return {
+        "accuracy": float(np.mean(y_true == y_pred)) if y_true.size else 0.0,
+        "macro_f1": float(f1_score(y_true, y_pred, average="macro", labels=[0, 1], zero_division=0)),
+        "real_f1": float(f1_score(y_true, y_pred, pos_label=0, labels=[0, 1], zero_division=0)),
+        "fake_f1": float(f1_score(y_true, y_pred, pos_label=1, labels=[0, 1], zero_division=0)),
+        "n_samples": int(y_true.size),
+        "n_real": int(np.sum(y_true == 0)),
+        "n_fake": int(np.sum(y_true == 1)),
+    }
+
+
+def _scores_to_detailed_metrics(
+    scores: np.ndarray,
+    labels_np: np.ndarray,
+    types_np: np.ndarray,
+    thr_mode: str,
+    thr_fix: float,
+) -> Dict[str, Any]:
+    eer, macro_f1, thr = _scores_to_metrics(scores, labels_np, thr_mode, thr_fix)
+    preds = (scores < thr).astype(np.int64)
+    out: Dict[str, Any] = {
+        "eer": eer,
+        "threshold": thr,
+        "macro_f1": macro_f1,
+        **_binary_metrics(labels_np, preds),
+        "per_type": {},
+    }
+    for t_idx, t_name in IDX_TO_TYPE.items():
+        m = types_np == t_idx
+        out["per_type"][t_name] = _binary_metrics(labels_np[m], preds[m])
+    return out
+
+
+def _flatten_full_metrics(prefix: str, metrics: Dict[str, Any]) -> Dict[str, Any]:
+    row: Dict[str, Any] = {
+        f"{prefix}_eer": metrics["eer"],
+        f"{prefix}_threshold": metrics["threshold"],
+        f"{prefix}_macro_f1": metrics["macro_f1"],
+        f"{prefix}_accuracy": metrics["accuracy"],
+        f"{prefix}_real_f1": metrics["real_f1"],
+        f"{prefix}_fake_f1": metrics["fake_f1"],
+        f"{prefix}_n_samples": metrics["n_samples"],
+        f"{prefix}_n_real": metrics["n_real"],
+        f"{prefix}_n_fake": metrics["n_fake"],
+    }
+    for t_name, tm in metrics["per_type"].items():
+        for key in ("accuracy", "macro_f1", "real_f1", "fake_f1", "n_samples", "n_real", "n_fake"):
+            row[f"{prefix}_{t_name}_{key}"] = tm[key]
+    return row
+
+
+def _save_json(path: Path, payload: Dict[str, Any]) -> None:
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
 
 
 def _forward_scores(
@@ -321,6 +402,7 @@ def _persist_latest(
     best_s: float,
     best_f: float,
     no_im: int,
+    best_full_metrics: Dict[str, float],
 ) -> None:
     torch.save(
         {
@@ -330,6 +412,7 @@ def _persist_latest(
             "optimizer_state_dict": optimizer.state_dict(),
             "best_sample_val": best_s,
             "best_full_val": best_f,
+            "best_full_metrics": best_full_metrics,
             "no_improve": no_im,
             "xlsr_eval_locked": getattr(model, "_lock_xlsr_eval", False),
         },
@@ -345,7 +428,7 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
     args.log_dir = os.path.join(args.out_fold, "logs")
     ckpt_dir = os.path.join(args.out_fold, "checkpoint")
 
-    cw = _class_weight(args.train_task, args.device)
+    cw = _class_weight(args, args.device)
     model = build_mult_head_from_args(args).to(args.device)
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -356,6 +439,7 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
     )
     wors = math.inf if args.save_best_by in ("loss", "eer") else -math.inf
     best_sample_val = best_full_val = wors
+    best_full_metrics = {"f1": -math.inf, "loss": math.inf, "eer": math.inf}
     no_improve = 0
     epoch0 = 0
     step = 0
@@ -369,6 +453,11 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
         step = int(blob.get("global_step", 0))
         best_sample_val = float(blob.get("best_sample_val", best_sample_val))
         best_full_val = float(blob.get("best_full_val", best_full_val))
+        raw_best_metrics = blob.get("best_full_metrics")
+        if isinstance(raw_best_metrics, dict):
+            for k in best_full_metrics:
+                if k in raw_best_metrics:
+                    best_full_metrics[k] = float(raw_best_metrics[k])
         no_improve = int(blob.get("no_improve", 0))
         if blob.get("xlsr_eval_locked"):
             model._lock_xlsr_eval = True
@@ -384,7 +473,6 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
     Path(args.out_fold).mkdir(parents=True, exist_ok=True)
     Path(args.log_dir).mkdir(parents=True, exist_ok=True)
     Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
-    Path(args.out_fold, "checkpoint_sample_dev").mkdir(parents=True, exist_ok=True)
     Path(args.out_fold, "checkpoint_all_dev").mkdir(parents=True, exist_ok=True)
     _save_config_snapshot(args)
 
@@ -419,9 +507,9 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
     def hk(v: float) -> float:
         return -v if args.save_best_by in ("loss", "eer") else v
 
-    # Top-3 by ``hk`` (higher = better). Min-heap on ``(hk, ...)`` so root = worst-of-three.
-    top3_heap: List[Tuple[float, float, int, str]] = []
-    top3_json = str(Path(args.out_fold, "checkpoint_sample_dev", "top3.json"))
+    def better_for_metric(metric: str, val: float, best: float) -> bool:
+        return val < best if metric in ("loss", "eer") else val > best
+
     stop_training = False
     thr_fix = float(args.score_threshold)
 
@@ -487,24 +575,6 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                 eer_o if strat == "oracle" else eer_total,
                 f1_o if strat == "oracle" else f1_total,
             )
-            if len(top3_heap) < 3 or hk(mv) > top3_heap[0][0]:
-                ckpt_step = Path(args.out_fold, "checkpoint_sample_dev", f"step_{gs}.pt")
-                torch.save(model.state_dict(), ckpt_step)
-                heapq.heappush(top3_heap, (hk(mv), mv, gs, str(ckpt_step)))
-                if len(top3_heap) > 3:
-                    _, _, _, old = heapq.heappop(top3_heap)
-                    if os.path.isfile(old):
-                        os.remove(old)
-
-                ranked = sorted(
-                    [{"metric_val": t[1], "step": t[2], "path": t[3]}
-                     for t in top3_heap],
-                    key=lambda r: hk(float(r["metric_val"])),
-                    reverse=True,
-                )
-                with open(top3_json, "w", encoding="utf-8") as jf:
-                    json.dump(ranked, jf, indent=2)
-
             if better(mv, best_sample_val):
                 best_sample_val, no_improve = mv, 0
             else:
@@ -520,7 +590,17 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                     f"\tthr:{thr_total:.4f}\tmult_ce:{mean_dev_loss:.6f}\n"
                 )
 
-            _persist_latest(model, optimizer, epoch, gs, args.out_fold, best_sample_val, best_full_val, no_improve)
+            _persist_latest(
+                model,
+                optimizer,
+                epoch,
+                gs,
+                args.out_fold,
+                best_sample_val,
+                best_full_val,
+                no_improve,
+                best_full_metrics,
+            )
 
             if use_wandb:
                 wandb.log(
@@ -548,13 +628,19 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                 and gs % int(args.full_eval_steps) == 0
                 and gs >= int(args.eval_warmup_steps)
             ):
-                sco_f_o, lab_f_o, _ = _forward_scores(model, full_ld, args, True)
-                eer_f_o, f1_f_o, _ = _scores_to_metrics(
+                sco_f_o, lab_f_o, type_f_o = _forward_scores(model, full_ld, args, True)
+                eer_f_o, f1_f_o, thr_f_o = _scores_to_metrics(
                     sco_f_o, lab_f_o, args.eval_threshold_mode, thr_fix
                 )
-                sco_f_t, lab_f_t, _ = _forward_scores(model, full_ld, args, False)
-                eer_f_t, f1_f_t, _ = _scores_to_metrics(
+                oracle_metrics = _scores_to_detailed_metrics(
+                    sco_f_o, lab_f_o, type_f_o, args.eval_threshold_mode, thr_fix
+                )
+                sco_f_t, lab_f_t, type_f_t = _forward_scores(model, full_ld, args, False)
+                eer_f_t, f1_f_t, thr_f_t = _scores_to_metrics(
                     sco_f_t, lab_f_t, args.eval_threshold_mode, thr_fix
+                )
+                total_metrics = _scores_to_detailed_metrics(
+                    sco_f_t, lab_f_t, type_f_t, args.eval_threshold_mode, thr_fix
                 )
                 ml_full = _mean_dev_loss(model, full_ld, args, cw)
                 eval_strat = getattr(args, "eval_strategy", "oracle")
@@ -563,33 +649,103 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                     eer_f_o if eval_strat == "oracle" else eer_f_t,
                     f1_f_o if eval_strat == "oracle" else f1_f_t,
                 )
+                selected_metrics = oracle_metrics if eval_strat == "oracle" else total_metrics
+                metric_values = {
+                    "f1": float(selected_metrics["macro_f1"]),
+                    "loss": float(ml_full),
+                    "eer": float(selected_metrics["eer"]),
+                }
+                full_payload = {
+                    "step": gs,
+                    "epoch": epoch,
+                    "metric": args.save_best_by,
+                    "metric_val": chk_f,
+                    "eval_strategy": eval_strat,
+                    "full_loss": ml_full,
+                    "selected": {
+                        "eer": selected_metrics["eer"],
+                        "f1": selected_metrics["macro_f1"],
+                        "accuracy": selected_metrics["accuracy"],
+                        "threshold": selected_metrics["threshold"],
+                    },
+                    "oracle": oracle_metrics,
+                    "total": total_metrics,
+                }
+                step_ckpt = Path(args.out_fold, "checkpoint_all_dev", f"step_{gs}.pt")
+                torch.save(model.state_dict(), step_ckpt)
+                _save_json(
+                    Path(args.out_fold, "checkpoint_all_dev", f"step_{gs}_meta.json"),
+                    full_payload,
+                )
+                with open(
+                    Path(args.out_fold, "checkpoint_all_dev", "full_eval_metrics.jsonl"),
+                    "a",
+                    encoding="utf-8",
+                ) as jf:
+                    jf.write(json.dumps(full_payload) + "\n")
+
+                full_row = {
+                    "step": gs,
+                    "epoch": epoch,
+                    "eval_strategy": eval_strat,
+                    "save_best_by": args.save_best_by,
+                    "full_loss": ml_full,
+                    "selected_f1": metric_values["f1"],
+                    "selected_eer": metric_values["eer"],
+                    "selected_accuracy": selected_metrics["accuracy"],
+                    **_flatten_full_metrics("oracle", oracle_metrics),
+                    **_flatten_full_metrics("total", total_metrics),
+                }
+                full_csv = Path(args.out_fold, "checkpoint_all_dev", "full_eval_metrics.csv")
+                write_header = not full_csv.exists()
+                with open(full_csv, "a", newline="", encoding="utf-8") as cf:
+                    writer = csv.DictWriter(cf, fieldnames=list(full_row.keys()))
+                    if write_header:
+                        writer.writeheader()
+                    writer.writerow(full_row)
                 
                 # 日志记录两个策略
                 with open(Path(args.log_dir, "dev_loss.log"), "a") as lf:
-                    lf.write(f"{gs}\tfull_oracle\teer:{eer_f_o:.6f}\tf1:{f1_f_o:.6f}\tmult_ce:{ml_full:.6f}\n")
-                    lf.write(f"{gs}\tfull_total\teer:{eer_f_t:.6f}\tf1:{f1_f_t:.6f}\tmult_ce:{ml_full:.6f}\n")
-                    
+                    lf.write(
+                        f"{gs}\tfull_oracle\teer:{eer_f_o:.6f}\tf1:{f1_f_o:.6f}"
+                        f"\tacc:{oracle_metrics['accuracy']:.6f}\tthr:{thr_f_o:.4f}"
+                        f"\tmult_ce:{ml_full:.6f}\n"
+                    )
+                    lf.write(
+                        f"{gs}\tfull_total\teer:{eer_f_t:.6f}\tf1:{f1_f_t:.6f}"
+                        f"\tacc:{total_metrics['accuracy']:.6f}\tthr:{thr_f_t:.4f}"
+                        f"\tmult_ce:{ml_full:.6f}\n"
+                    )
+                    for prefix, metrics in (("oracle", oracle_metrics), ("total", total_metrics)):
+                        for t_name, tm in metrics["per_type"].items():
+                            lf.write(
+                                f"{gs}\tfull_{prefix}_{t_name}"
+                                f"\tacc:{tm['accuracy']:.6f}\tf1:{tm['macro_f1']:.6f}"
+                                f"\treal_f1:{tm['real_f1']:.6f}\tfake_f1:{tm['fake_f1']:.6f}"
+                                f"\tn:{tm['n_samples']}\n"
+                            )
+
+                for metric_name, metric_val in metric_values.items():
+                    if better_for_metric(metric_name, metric_val, best_full_metrics[metric_name]):
+                        best_full_metrics[metric_name] = metric_val
+                        torch.save(
+                            model.state_dict(),
+                            Path(args.out_fold, "checkpoint_all_dev", f"best_{metric_name}.pt"),
+                        )
+                        meta = dict(full_payload)
+                        meta.update({"best_metric": metric_name, "best_metric_val": metric_val})
+                        _save_json(
+                            Path(args.out_fold, "checkpoint_all_dev", f"best_{metric_name}_meta.json"),
+                            meta,
+                        )
+
                 if better(chk_f, best_full_val):
                     best_full_val = chk_f
                     torch.save(
                         model.state_dict(),
                         Path(args.out_fold, "checkpoint_all_dev", "best.pt"),
                     )
-                    with open(Path(args.out_fold, "checkpoint_all_dev", "best_meta.json"), "w") as mf:
-                        json.dump(
-                            {
-                                "step": gs,
-                                "oracle_eer": eer_f_o,
-                                "oracle_f1": f1_f_o,
-                                "total_eer": eer_f_t,
-                                "total_f1": f1_f_t,
-                                "metric": args.save_best_by,
-                                "metric_val": chk_f,
-                                "eval_strategy": eval_strat,
-                            },
-                            mf,
-                            indent=2,
-                        )
+                    _save_json(Path(args.out_fold, "checkpoint_all_dev", "best_meta.json"), full_payload)
                 if use_wandb:
                     wandb.log(
                         {
@@ -602,7 +758,15 @@ def train(args: argparse.Namespace) -> torch.nn.Module:
                         step=gs,
                     )
                 _persist_latest(
-                    model, optimizer, epoch, gs, args.out_fold, best_sample_val, best_full_val, no_improve
+                    model,
+                    optimizer,
+                    epoch,
+                    gs,
+                    args.out_fold,
+                    best_sample_val,
+                    best_full_val,
+                    no_improve,
+                    best_full_metrics,
                 )
                 model.train()
 

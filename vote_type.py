@@ -4,9 +4,8 @@ Type-routed spoof detection inference.
 
 1. Load a **4-way type classifier** checkpoint from ``ckpt_type_classification/*``
    (``type_train_cli.json`` + ``checkpoint/best.pt`` or ``latest.pt``).
-2. Route each utterance:
-   - predicted **speech / singing** (classes 0, 2) → ``ft-xlsrmertaasist`` backbone
-   - predicted **sound / music** (classes 1, 3) → ``ft-xlsrbeatsaasist`` backbone
+2. Predict the audio type for each utterance and pass that predicted type to the
+   multi-head model's oracle strategy, selecting the matching specialist head.
 3. Score **dev** and **eval** audio roots (defaults from ``conf/vote/ft_routed_ssl_aasist.yaml``
    ``data.atadd_t2_*``), write logits CSV and (for dev) an analysis CSV matching ``analyze.py``
    conventions for metrics.
@@ -15,7 +14,8 @@ Example::
 
     python vote_type.py \\
         --type_ckpt_dir ./ckpt_type_classification/xlsr \\
-        --out_dir ./ckpt_t2_vote/type_xlsr_xlsrmert_xlsrbeats \\
+        --multi_head_model_path ./ckpt_t2_multi_head_layer/xslrbeats_beats3_6_9_xlsr3_11_24 \\
+        --out_dir ./ckpt_t2_vote/type_xlsr_multiHead_oracle_beats369_xlsr31124 \\
         --vote_yaml ./conf/vote/ft_routed_ssl_aasist.yaml \\
         --gpu 1 --batch_size 160
 """
@@ -405,6 +405,104 @@ def routed_scores_for_batch(
     return scores_out.astype(np.float32), pred_np, details
 
 
+def _find_multi_head_checkpoint(model_dir: str) -> str:
+    """Prefer the full-dev best multi-head checkpoint, then sample-dev / latest."""
+    candidates = [
+        "checkpoint_all_dev/best.pt",
+        "checkpoint_sample_dev/best.pt",
+        "checkpoint/best.pt",
+        "checkpoint/latest.pt",
+    ]
+    for name in candidates:
+        p = os.path.join(model_dir, name)
+        if os.path.isfile(p):
+            return p
+
+    top3_path = os.path.join(model_dir, "checkpoint_sample_dev", "top3.json")
+    if os.path.isfile(top3_path):
+        with open(top3_path, "r", encoding="utf-8") as f:
+            ranked = json.load(f)
+        if ranked:
+            p = ranked[0].get("path")
+            if p and not os.path.isabs(p):
+                p = os.path.join(model_dir, p)
+            if p and os.path.isfile(p):
+                return p
+
+    raise FileNotFoundError(
+        f"No multi-head checkpoint found under {model_dir!r}. "
+        "Expected checkpoint_all_dev/best.pt, checkpoint/latest.pt, or checkpoint_sample_dev/top3.json."
+    )
+
+
+def _find_multi_head_config(model_dir: str) -> str:
+    for name in ("mult_config_used.yaml", "config.yaml"):
+        p = os.path.join(model_dir, name)
+        if os.path.isfile(p):
+            return p
+    raise FileNotFoundError(
+        f"No multi-head config found under {model_dir!r}. Expected mult_config_used.yaml or config.yaml."
+    )
+
+
+def _load_multi_head_model(
+    model_dir: str,
+    config_path: str | None,
+    checkpoint_path: str | None,
+    gpu: str,
+    batch_size: int,
+):
+    from multi_head.multi_head import build_mult_head_from_args, inference as multi_head_inference
+    from multi_head.multi_main_train import load_mult_namespace
+
+    cfg = os.path.abspath(config_path or _find_multi_head_config(model_dir))
+    ckpt = os.path.abspath(checkpoint_path or _find_multi_head_checkpoint(model_dir))
+
+    args = load_mult_namespace(cfg)
+    args.gpu = gpu
+    args.cuda = torch.cuda.is_available()
+    args.device = torch.device("cuda" if args.cuda else "cpu")
+    args.batch_size = batch_size
+
+    state = _extract_model_state_dict(_load_torch_state(ckpt, args.device))
+    model = build_mult_head_from_args(args).to(args.device)
+    model.load_state_dict(state, strict=True)
+    model.eval()
+
+    print(f"[multi_head] config={cfg}")
+    print(f"[multi_head] weights={ckpt}")
+    return model, args, multi_head_inference, cfg, ckpt
+
+
+def multi_head_oracle_scores_for_batch(
+    type_model,
+    multi_head_model,
+    multi_head_inference,
+    multi_args,
+    wave: torch.Tensor,
+    device: torch.device,
+    amp_type: bool,
+    amp_detect: bool,
+):
+    """Predict fine type, then use the multi-head oracle specialist for that type."""
+    pred_np, probs = _type_predict(type_model, wave, device, amp_type)
+    pred_t = torch.as_tensor(pred_np, dtype=torch.long, device=multi_args.device)
+    wave = wave.to(multi_args.device, non_blocking=True)
+    with torch.no_grad():
+        with autocast(enabled=amp_detect):
+            scores, _ = multi_head_inference(multi_head_model, wave, audio_type=pred_t)
+    sc_np = scores.detach().float().cpu().numpy()
+    details = [
+        {
+            "pred_type": ATADD_AUDIO_TYPE_NAMES[int(pred_np[i])],
+            "pred_type_id": int(pred_np[i]),
+            "type_probs": {ATADD_AUDIO_TYPE_NAMES[j]: float(probs[i, j]) for j in range(4)},
+        }
+        for i in range(wave.size(0))
+    ]
+    return sc_np.astype(np.float32), pred_np, details
+
+
 def load_label_meta_dev(label_path: str) -> dict:
     meta = {}
     valid_t = frozenset({"speech", "sound", "music", "singing"})
@@ -625,17 +723,174 @@ def run_eval(
     print(f"[eval] binary: {bin_path}")
 
 
+def run_dev_multi_head_oracle(
+    type_model,
+    multi_head_model,
+    multi_head_inference,
+    multi_args,
+    dev_audio: str,
+    dev_label: str,
+    out_dir: str,
+    eval_task: str,
+    device: torch.device,
+    batch_size: int,
+    threshold: float,
+    num_workers: int,
+    amp_type: bool,
+    amp_detect: bool,
+    audio_len: int,
+):
+    label_meta = load_label_meta_dev(dev_label)
+    print(f"[dev] label rows (valid): {len(label_meta)}")
+
+    ds = atadd_eval_dataset(path_to_audio=dev_audio, audio_length=audio_len)
+    loader = DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+    )
+
+    os.makedirs(os.path.join(out_dir, "result"), exist_ok=True)
+    score_path = os.path.join(out_dir, "result", f"{eval_task}_logits_dev_vote_type.csv")
+    analysis_path = os.path.join(out_dir, "result", f"{eval_task}_analysis_dev_vote_type.csv")
+
+    route_counts = {name: 0 for name in ATADD_AUDIO_TYPE_NAMES}
+    mismatches_vs_gt_route = []
+
+    with open(analysis_path, "w", encoding="utf-8", newline="") as fav, open(
+        score_path, "w", encoding="utf-8", newline=""
+    ) as fsc:
+        w_a = csv.writer(fav)
+        w_s = csv.writer(fsc)
+        w_a.writerow(["name", "predict", "type", "label", "pred_type", "score"])
+        w_s.writerow(["name", "score"])
+
+        for wave, filenames in tqdm(loader, desc="vote-type-mh-dev"):
+            sc_np, pred_np, _ = multi_head_oracle_scores_for_batch(
+                type_model,
+                multi_head_model,
+                multi_head_inference,
+                multi_args,
+                wave,
+                device,
+                amp_type,
+                amp_detect,
+            )
+            for i, fn in enumerate(filenames):
+                name = fn.strip()
+                meta = label_meta.get(name)
+                if meta is None:
+                    continue
+                gt_type, gt_label = meta
+                pr = ATADD_AUDIO_TYPE_NAMES[int(pred_np[i])]
+                score = float(sc_np[i])
+                predict = "real" if score >= threshold else "fake"
+
+                route_counts[pr] += 1
+                if gt_type != pr:
+                    mismatches_vs_gt_route.append(
+                        {"name": name, "gt_type": gt_type, "pred_type": pr}
+                    )
+
+                w_a.writerow([name, predict, gt_type, gt_label, pr, f"{score:.8f}"])
+                w_s.writerow([name, f"{score:.8f}"])
+
+    print(f"[dev] analysis CSV       : {analysis_path}")
+    print(f"[dev] logits CSV          : {score_path}")
+    print(f"[dev] oracle head counts  : {route_counts}")
+    print(f"[dev] pred type mismatches: {len(mismatches_vs_gt_route)} samples")
+
+    analyze_dev_predictions(analysis_path)
+
+
+def run_eval_multi_head_oracle(
+    type_model,
+    multi_head_model,
+    multi_head_inference,
+    multi_args,
+    eval_audio: str,
+    out_dir: str,
+    eval_task: str,
+    device: torch.device,
+    batch_size: int,
+    threshold: float,
+    num_workers: int,
+    amp_type: bool,
+    amp_detect: bool,
+    audio_len: int,
+):
+    ds = atadd_eval_dataset(path_to_audio=eval_audio, audio_length=audio_len)
+    loader = DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+    )
+
+    os.makedirs(os.path.join(out_dir, "result"), exist_ok=True)
+    logit_path = os.path.join(out_dir, "result", f"{eval_task}_logits_eval_vote_type.csv")
+    bin_path = os.path.join(out_dir, "result", f"{eval_task}_binary_eval_vote_type.csv")
+
+    route_counts = {name: 0 for name in ATADD_AUDIO_TYPE_NAMES}
+    with open(logit_path, "w", encoding="utf-8", newline="") as fl, open(
+        bin_path, "w", encoding="utf-8", newline=""
+    ) as fb:
+        wl = csv.writer(fl)
+        wb = csv.writer(fb)
+        wl.writerow(["name", "score"])
+        wb.writerow(["name", "predict"])
+
+        for wave, filenames in tqdm(loader, desc="vote-type-mh-eval"):
+            sc_np, pred_np, _ = multi_head_oracle_scores_for_batch(
+                type_model,
+                multi_head_model,
+                multi_head_inference,
+                multi_args,
+                wave,
+                device,
+                amp_type,
+                amp_detect,
+            )
+            for i, fn in enumerate(filenames):
+                score = float(sc_np[i])
+                pred_bin = "real" if score >= threshold else "fake"
+                route_counts[ATADD_AUDIO_TYPE_NAMES[int(pred_np[i])]] += 1
+                wl.writerow([fn.strip(), f"{score:.8f}"])
+                wb.writerow([fn.strip(), pred_bin])
+
+    meta_p = os.path.join(out_dir, "result", f"{eval_task}_vote_type_binary_meta.json")
+    with open(meta_p, "w", encoding="utf-8") as mf:
+        json.dump(
+            {
+                "threshold": threshold,
+                "strategy": "predicted_type_multi_head_oracle",
+                "oracle_head_counts": route_counts,
+                "logits": logit_path,
+                "binary": bin_path,
+            },
+            mf,
+            indent=2,
+        )
+
+    print(f"[eval] logits : {logit_path}")
+    print(f"[eval] binary: {bin_path}")
+    print(f"[eval] oracle head counts: {route_counts}")
+
+
 def main():
     default_type = os.path.join(_ROOT, "ckpt_type_classification", "xlsr")
-    default_merta = os.path.join(_ROOT, "ckpt_t2_prev", "ft-xlsrmertaasist")
-    default_beats = os.path.join(
-        _ROOT,
-        "ckpt_t2_main",
-        "ft-xlsrbeatsaasist_all_sound0.8_singing0.2_f1",
+    default_multi_head = os.path.join(
+        _ROOT, "ckpt_t2_multi_head_layer", "xslrbeats_beats3_6_9_xlsr3_11_24"
     )
     default_yaml = os.path.join(_ROOT, "conf", "vote", "ft_routed_ssl_aasist.yaml")
+    default_out = os.path.join(
+        _ROOT, "ckpt_t2_vote", "type_xlsr_multiHead_oracle_beats369_xlsr31124"
+    )
 
-    ap = argparse.ArgumentParser(description="Type-routed MERT vs BEATs spoof inference")
+    ap = argparse.ArgumentParser(description="Type-classifier routed multi-head oracle inference")
     ap.add_argument(
         "--type_ckpt_dir",
         type=str,
@@ -643,16 +898,22 @@ def main():
         help="Directory with type_train_cli.json + checkpoint/best.pt",
     )
     ap.add_argument(
-        "--speech_branch_model_path",
+        "--multi_head_model_path",
         type=str,
-        default=default_merta,
-        help="speech/singing → this detector (default: ckpt_t2_prev/ft-xlsrmertaasist)",
+        default=default_multi_head,
+        help="Multi-head experiment directory used for oracle-head inference.",
     )
     ap.add_argument(
-        "--sound_branch_model_path",
+        "--multi_head_config",
         type=str,
-        default=default_beats,
-        help="sound/music → this detector (default: ckpt_t2_main/ft-xlsrbeatsaasist_...)",
+        default=None,
+        help="Optional multi-head config path; defaults to <multi_head_model_path>/mult_config_used.yaml.",
+    )
+    ap.add_argument(
+        "--multi_head_checkpoint",
+        type=str,
+        default=None,
+        help="Optional multi-head checkpoint; defaults to checkpoint_all_dev/best.pt if present.",
     )
     ap.add_argument(
         "--vote_yaml",
@@ -663,9 +924,14 @@ def main():
     ap.add_argument("--dev_audio", type=str, default=None)
     ap.add_argument("--dev_label", type=str, default=None)
     ap.add_argument("--eval_audio", type=str, default=None)
-    ap.add_argument("--skip_dev", action="store_true")
+    ap.add_argument(
+        "--skip_dev",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip dev by default; pass --no-skip_dev to also run dev analysis.",
+    )
     ap.add_argument("--skip_eval", action="store_true")
-    ap.add_argument("--out_dir", type=str, required=True)
+    ap.add_argument("--out_dir", type=str, default=default_out)
     ap.add_argument("--gpu", type=str, default="0")
     ap.add_argument("--batch_size", type=int, default=24)
     ap.add_argument("--num_workers", type=int, default=8)
@@ -695,58 +961,44 @@ def main():
     device = torch.device("cuda" if cuda_ok else "cpu")
     print("Device:", device)
 
-    inference = _load_inference_module()
-
     yaml_paths = _load_vote_yaml_paths(ns.vote_yaml)
     dev_audio = ns.dev_audio or yaml_paths["atadd_t2_dev_audio"]
     dev_label = ns.dev_label or yaml_paths["atadd_t2_dev_label"]
     eval_audio = ns.eval_audio or yaml_paths["atadd_t2_eval_audio"]
 
     type_ckpt = os.path.abspath(ns.type_ckpt_dir)
-    speech_mp = os.path.abspath(ns.speech_branch_model_path)
-    sound_mp = os.path.abspath(ns.sound_branch_model_path)
-
-    speech_args = _init_branch_args(inference, speech_mp, ns.gpu, ns.batch_size)
-    sound_args = _init_branch_args(inference, sound_mp, ns.gpu, ns.batch_size)
+    multi_head_mp = os.path.abspath(ns.multi_head_model_path)
 
     type_model = _load_type_model(type_ckpt, device)
+    multi_head_model, multi_head_args, multi_head_inference, mh_cfg, mh_ckpt = _load_multi_head_model(
+        multi_head_mp,
+        ns.multi_head_config,
+        ns.multi_head_checkpoint,
+        ns.gpu,
+        ns.batch_size,
+    )
 
     cli = getattr(type_model, "_vote_type_cli", {})
     audio_len_cli = int(cli.get("audio_len", 64600))
-    al_sp = int(getattr(speech_args, "audio_len", audio_len_cli))
-    al_so = int(getattr(sound_args, "audio_len", audio_len_cli))
+    al_mh = int(getattr(multi_head_args, "audio_len", audio_len_cli))
     audio_len_use = audio_len_cli
-    if not (audio_len_cli == al_sp == al_so):
+    if audio_len_cli != al_mh:
         print(
             f"[warn] audio_len mismatch — type_ckpt:{audio_len_cli} "
-            f"speech_ckpt:{al_sp} sound_ckpt:{al_so}; using type_ckpt {audio_len_cli}"
+            f"multi_head:{al_mh}; using type_ckpt {audio_len_cli}"
         )
-
-    sp_ckpt = inference._find_model_checkpoint(speech_mp)
-    so_ckpt = inference._find_model_checkpoint(sound_mp)
-    print("[speech_branch]", speech_args.model, "<-", os.path.basename(sp_ckpt))
-    print("[sound_branch]", sound_args.model, "<-", os.path.basename(so_ckpt))
-
-    speech_model = inference.build_model_for_inference(speech_args)
-    speech_model.load_state_dict(
-        _load_detector_checkpoint(sp_ckpt, speech_args.device, "speech_branch", speech_args.model),
-        strict=True,
-    )
-    speech_model.eval()
-
-    sound_model = inference.build_model_for_inference(sound_args)
-    sound_model.load_state_dict(
-        _load_detector_checkpoint(so_ckpt, sound_args.device, "sound_branch", sound_args.model),
-        strict=True,
-    )
-    sound_model.eval()
 
     os.makedirs(ns.out_dir, exist_ok=True)
     meta = {
         "type_ckpt_dir": type_ckpt,
         "type_weights": getattr(type_model, "_vote_type_ckpt_path", ""),
-        "speech_branch": {"path": speech_mp, "checkpoint": sp_ckpt, "model": speech_args.model},
-        "sound_branch": {"path": sound_mp, "checkpoint": so_ckpt, "model": sound_args.model},
+        "strategy": "predicted_type_multi_head_oracle",
+        "multi_head": {
+            "path": multi_head_mp,
+            "config": mh_cfg,
+            "checkpoint": mh_ckpt,
+            "ssl_backbone": getattr(multi_head_args, "ssl_backbone", ""),
+        },
         "vote_yaml": os.path.abspath(ns.vote_yaml),
         "paths": {"dev_audio": dev_audio, "dev_label": dev_label, "eval_audio": eval_audio},
         "threshold": ns.threshold,
@@ -755,12 +1007,11 @@ def main():
         json.dump(meta, mf, indent=2, ensure_ascii=False)
 
     if not ns.skip_dev:
-        run_dev(
+        run_dev_multi_head_oracle(
             type_model,
-            speech_model,
-            sound_model,
-            speech_args,
-            sound_args,
+            multi_head_model,
+            multi_head_inference,
+            multi_head_args,
             dev_audio,
             dev_label,
             ns.out_dir,
@@ -775,12 +1026,11 @@ def main():
         )
 
     if not ns.skip_eval:
-        run_eval(
+        run_eval_multi_head_oracle(
             type_model,
-            speech_model,
-            sound_model,
-            speech_args,
-            sound_args,
+            multi_head_model,
+            multi_head_inference,
+            multi_head_args,
             eval_audio,
             ns.out_dir,
             ns.eval_task,

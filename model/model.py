@@ -84,7 +84,7 @@ class SingleSSLModel(nn.Module):
 
         if self.feat_preprocess is not None:
             feat = self.feat_preprocess(feat)
-
+        #feat [B, T, C]
         hidden, out = self.backend(feat)
         if self.visual:
             return hidden, out, attn
