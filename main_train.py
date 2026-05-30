@@ -1,9 +1,8 @@
-import heapq
 import json
 import os
+import re
 import shutil
 import time
-from collections import defaultdict
 
 import numpy as np
 import torch
@@ -63,8 +62,8 @@ def initParams():
             shutil.rmtree(args.out_fold)
         os.makedirs(args.log_dir)
         os.makedirs(ckpt_dir)
-        os.makedirs(os.path.join(args.out_fold, "checkpoint_sample_dev"))
         os.makedirs(os.path.join(args.out_fold, "checkpoint_all_dev"))
+        os.makedirs(os.path.join(args.out_fold, "checkpoint_steps"))
 
         # Save full config as YAML (used for --resume and reproducibility)
         if cfg is not None:
@@ -74,9 +73,9 @@ def initParams():
         with open(os.path.join(args.log_dir, "train_loss.log"), "w") as f:
             f.write("step\tepoch\tbatch\ttrain_loss\n")
         with open(os.path.join(args.log_dir, "dev_loss.log"), "w") as f:
-            f.write("step\ttag\tval_loss\tval_eer\tval_f1\t[per-type EER/F1]\n")
+            f.write("step\ttag\tval_loss\tval_eer\tval_f1\t[per-type EER/F1]\t[per-generator F1]\n")
         with open(os.path.join(args.log_dir, "all_dev_loss.log"), "w") as f:
-            f.write("step\ttag\tval_loss\tval_eer\tval_f1\t[per-type EER/F1]\n")
+            f.write("step\ttag\tval_loss\tval_eer\tval_f1\t[per-type EER/F1]\t[per-generator F1]\n")
 
     args.cuda   = torch.cuda.is_available()
     args.device = torch.device("cuda" if args.cuda else "cpu")
@@ -96,8 +95,24 @@ def train(args):
     full_val_loader           = build_full_dev_loader(args)
 
     start_epoch      = resume["start_epoch"]
-    best_sample_val  = resume["best_sample_val"]   # for early stopping + top-3 tracking
-    best_full_val    = resume["best_full_val"]      # for checkpoint_all_dev/best.pt
+    best_sample_val  = resume["best_sample_val"]   # for early stopping
+    best_full_val    = resume["best_full_val"]      # legacy: for checkpoint_all_dev/best.pt
+    best_full_vals   = {
+        "loss": float("inf"),
+        "eer": float("inf"),
+        "f1": -float("inf"),
+    }
+    best_full_vals.update(resume.get("best_full_vals") or {})
+    if (
+        args.save_best_by in ("loss", "eer")
+        and best_full_vals[args.save_best_by] == float("inf")
+        and best_full_val != float("inf")
+    ) or (
+        args.save_best_by == "f1"
+        and best_full_vals["f1"] == -float("inf")
+        and best_full_val != -float("inf")
+    ):
+        best_full_vals[args.save_best_by] = best_full_val
     no_improve       = resume["no_improve"]
 
     # Helper: extract the tracked metric value from (loss, eer, f1)
@@ -114,24 +129,10 @@ def train(args):
             return new_val < cur_best   # lower is better
         return new_val > cur_best       # f1: higher is better
 
-    # Min/max heap direction: for loss/eer (lower=better) we want heap[0] to be
-    # the worst (highest) → store as (-value) in a min-heap.
-    # For f1 (higher=better) heap[0] should be the worst (lowest) → store as (value).
-    def _heap_key(metric_val):
-        return -metric_val if args.save_best_by in ("loss", "eer") else metric_val
-
-    # ── Top-3 checkpoint tracker (sample dev, by save_best_by) ───────────────
-    # Min-heap on _heap_key: heap[0] is always the worst of the top-3.
-    top3_heap = []
-    top3_json = os.path.join(args.out_fold, "checkpoint_sample_dev", "top3.json")
-    if os.path.exists(top3_json):
-        with open(top3_json) as f:
-            for item in json.load(f):
-                if os.path.exists(item["path"]):
-                    heapq.heappush(
-                        top3_heap,
-                        (_heap_key(item["metric_val"]), item["step"], item["path"]),
-                    )
+    def _is_metric_better(metric_name, new_val, cur_best):
+        if metric_name in ("loss", "eer"):
+            return new_val < cur_best
+        return new_val > cur_best
 
     amp_enabled  = bool(args.amp and args.cuda and args.model in _AMP_MODELS)
     scaler       = GradScaler(enabled=amp_enabled)
@@ -152,15 +153,34 @@ def train(args):
 
     n_batches     = len(train_loader)
     stop_training = False
+    last_completed_step = int(resume.get("global_step", 0) or 0)
+    checkpoint_steps_dir = os.path.join(args.out_fold, "checkpoint_steps")
+    os.makedirs(checkpoint_steps_dir, exist_ok=True)
 
     # ── Shared inference helper ───────────────────────────────────────────────
+
+    def _safe_metric_key(value):
+        return re.sub(r"[^0-9A-Za-z_.-]+", "_", str(value).strip())
+
+    def _jsonable_metrics(metrics):
+        out = {}
+        for key, values in metrics.items():
+            out[str(key)] = {}
+            for k, v in values.items():
+                if isinstance(v, (float, np.floating)):
+                    out[str(key)][k] = None if np.isnan(v) else float(v)
+                elif isinstance(v, (int, np.integer)):
+                    out[str(key)][k] = int(v)
+                else:
+                    out[str(key)][k] = v
+        return out
 
     def _run_inference(loader):
         """Run the model over *loader* and return aggregated eval metrics."""
         model.eval()
-        loss_list, score_list, label_list, type_list = [], [], [], []
+        loss_list, score_list, label_list, type_list, generator_list = [], [], [], [], []
         with torch.no_grad():
-            for feat, _, labels, class_types, _ in tqdm(loader, leave=False, desc="eval"):
+            for feat, _, labels, class_types, generators in tqdm(loader, leave=False, desc="eval"):
                 feat   = feat.to(args.device, non_blocking=True)
                 labels = labels.to(args.device, non_blocking=True)
                 with autocast(enabled=amp_enabled):
@@ -175,11 +195,13 @@ def train(args):
                 score_list.append(score)
                 label_list.append(labels)
                 type_list.append(class_types)
+                generator_list.extend([str(g) for g in generators])
 
         val_loss  = float(np.nanmean(loss_list))
         scores    = torch.cat(score_list).cpu().numpy()
         labels_np = torch.cat(label_list).cpu().numpy()
         types     = torch.cat(type_list).cpu().numpy()
+        generators = np.asarray(generator_list, dtype=object)
 
         real_sc = scores[labels_np == 0]
         fake_sc = scores[labels_np == 1]
@@ -192,7 +214,7 @@ def train(args):
 
         # Higher score => real (label 0); fake (label 1) when score < threshold
         preds = (scores < thr).astype(np.int64)
-        val_f1 = f1_score(labels_np, preds, average="macro")
+        val_f1 = f1_score(labels_np, preds, average="macro", zero_division=0)
 
         type_metrics = {}
         for t in np.unique(types):
@@ -202,43 +224,66 @@ def train(args):
             type_metrics[t] = {
                 "eer": (np.nan if len(np.unique(tl)) < 2
                         else em.compute_eer(ts[tl == 0], ts[tl == 1])[0]),
-                "f1":  f1_score(tl, tp, average="macro"),
+                "f1":  f1_score(tl, tp, average="macro", zero_division=0),
             }
-        return val_loss, val_eer, val_f1, type_metrics, float(thr)
 
-    def _log_metrics(log_filename, tag, global_step, val_loss, val_eer, val_f1, type_metrics):
+        generator_metrics = {}
+        for generator in sorted(np.unique(generators), key=lambda x: str(x)):
+            mask = generators == generator
+            gl, gs = labels_np[mask], scores[mask]
+            gp = (gs < thr).astype(np.int64)
+            generator_metrics[str(generator)] = {
+                "eer": (np.nan if len(np.unique(gl)) < 2
+                        else em.compute_eer(gs[gl == 0], gs[gl == 1])[0]),
+                "f1": f1_score(gl, gp, average="macro", zero_division=0),
+                "support": int(mask.sum()),
+                "real": int((gl == 0).sum()),
+                "fake": int((gl == 1).sum()),
+            }
+
+        return val_loss, val_eer, val_f1, type_metrics, generator_metrics, float(thr)
+
+    def _log_metrics(
+        log_filename,
+        tag,
+        global_step,
+        val_loss,
+        val_eer,
+        val_f1,
+        type_metrics,
+        generator_metrics,
+    ):
         with open(os.path.join(args.log_dir, log_filename), "a") as f:
             f.write(f"{global_step}\t{tag}\t{val_loss:.6f}\t{val_eer:.6f}\t{val_f1:.6f}")
             for t, m in type_metrics.items():
                 f.write(f"\t{t}_EER:{m['eer']:.4f}\t{t}_F1:{m['f1']:.4f}")
+            for generator, m in generator_metrics.items():
+                gen_key = _safe_metric_key(generator)
+                f.write(
+                    f"\tGEN_{gen_key}_F1:{m['f1']:.4f}"
+                    #f"\tGEN_{gen_key}_N:{m['support']}"
+                )
             f.write("\n")
 
-    def _update_top3_sample(val_loss, val_eer, val_f1, global_step):
-        """Save to checkpoint_sample_dev/ if this eval belongs to the top-3 by save_best_by."""
-        nonlocal top3_heap
-        mv  = _metric_val(val_loss, val_eer, val_f1)
-        hk  = _heap_key(mv)
-        if len(top3_heap) < 3 or hk > top3_heap[0][0]:
-            path = os.path.join(
-                args.out_fold, "checkpoint_sample_dev", f"step_{global_step}.pt"
-            )
-            torch.save(model.state_dict(), path)
-            heapq.heappush(top3_heap, (hk, global_step, path))
-            if len(top3_heap) > 3:
-                _, _, evicted = heapq.heappop(top3_heap)   # removes worst entry
-                if os.path.exists(evicted):
-                    os.remove(evicted)
-            # Persist metadata — sort best-first
-            reverse = args.save_best_by not in ("loss", "eer")
-            top3_data = sorted(
-                [{"metric_val": _heap_key(hk_), "step": s, "path": p,
-                  "metric": args.save_best_by}
-                 for hk_, s, p in top3_heap],
-                key=lambda x: x["metric_val"],
-                reverse=reverse,
-            )
-            with open(top3_json, "w") as f:
-                json.dump(top3_data, f, indent=2)
+    def _save_latest(epoch, global_step):
+        torch.save(
+            {
+                "epoch":                epoch,
+                "global_step":          global_step,
+                "model_state_dict":     model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_sample_val":      best_sample_val,
+                "best_full_val":        best_full_val,
+                "best_full_vals":       best_full_vals,
+                "no_improve":           no_improve,
+            },
+            os.path.join(args.out_fold, "checkpoint", "latest.pt"),
+        )
+
+    def _save_step_checkpoint(global_step):
+        path = os.path.join(checkpoint_steps_dir, f"step_{global_step}.pt")
+        torch.save(model.state_dict(), path)
+        print(f"  → Saved step checkpoint: {path}")
 
     # ── Sample-dev evaluation (every eval_steps steps) ───────────────────────
 
@@ -246,7 +291,6 @@ def train(args):
         """Evaluate on the subsampled dev set.
 
         - Logs to ``dev_loss.log``.
-        - Maintains top-3 checkpoints by ``save_best_by`` in ``checkpoint_sample_dev/``.
         - Tracks ``save_best_by`` improvement for early stopping.
         - Returns True if early stopping should trigger.
         """
@@ -254,9 +298,20 @@ def train(args):
 
         tag = f"{epoch}.{global_step}"
         t0  = time.time()
-        val_loss, val_eer, val_f1, type_metrics, decision_thr = _run_inference(val_loader)
+        val_loss, val_eer, val_f1, type_metrics, generator_metrics, decision_thr = _run_inference(
+            val_loader
+        )
 
-        _log_metrics("dev_loss.log", tag, global_step, val_loss, val_eer, val_f1, type_metrics)
+        _log_metrics(
+            "dev_loss.log",
+            tag,
+            global_step,
+            val_loss,
+            val_eer,
+            val_f1,
+            type_metrics,
+            generator_metrics,
+        )
 
         if use_wandb:
             wb = {"sample_eval/loss": val_loss, "sample_eval/eer": val_eer,
@@ -264,6 +319,10 @@ def train(args):
             for t, m in type_metrics.items():
                 wb[f"sample_eval/{t}/eer"] = m["eer"]
                 wb[f"sample_eval/{t}/f1"]  = m["f1"]
+            for generator, m in generator_metrics.items():
+                gen_key = _safe_metric_key(generator)
+                wb[f"sample_eval/generator/{gen_key}/f1"] = m["f1"]
+                wb[f"sample_eval/generator/{gen_key}/support"] = m["support"]
             wandb.log(wb, step=global_step)
 
         print(f"\n[SampleEval @ {tag}]  loss={val_loss:.4f}  EER={val_eer:.4f}"
@@ -271,9 +330,10 @@ def train(args):
               f"  ({(time.time()-t0)/60:.1f} min)")
         for t, m in type_metrics.items():
             print(f"  [{t}]  EER={m['eer']:.4f}  F1={m['f1']:.4f}")
-
-        # Top-3 by save_best_by in checkpoint_sample_dev/
-        _update_top3_sample(val_loss, val_eer, val_f1, global_step)
+        gen_f1 = "  ".join(
+            f"{generator}_F1={m['f1']:.4f}" for generator, m in generator_metrics.items()
+        )
+        print(f"  [generator] {gen_f1}")
 
         # Early stopping based on save_best_by improvement
         cur_val = _metric_val(val_loss, val_eer, val_f1)
@@ -285,18 +345,7 @@ def train(args):
             no_improve += 1
 
         # Always update latest.pt for clean resume
-        torch.save(
-            {
-                "epoch":                epoch,
-                "global_step":          global_step,
-                "model_state_dict":     model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "best_sample_val":      best_sample_val,
-                "best_full_val":        best_full_val,
-                "no_improve":           no_improve,
-            },
-            os.path.join(args.out_fold, "checkpoint", "latest.pt"),
-        )
+        _save_latest(epoch, global_step)
 
         should_stop = args.patience > 0 and no_improve >= args.patience
         if should_stop:
@@ -310,17 +359,21 @@ def train(args):
         """Evaluate on the complete dev set.
 
         - Logs to ``all_dev_loss.log``.
-        - Saves ``checkpoint_all_dev/best.pt`` when ``save_best_by`` metric improves.
+        - Saves independent best checkpoints for full-dev loss, EER, and F1.
+        - Keeps ``checkpoint_all_dev/best.pt`` as a compatibility alias for
+          the metric selected by ``save_best_by``.
         - Does NOT affect early stopping.
         """
-        nonlocal best_full_val
+        nonlocal best_full_val, best_full_vals
 
         tag = f"{epoch}.{global_step}"
         t0  = time.time()
-        val_loss, val_eer, val_f1, type_metrics, decision_thr = _run_inference(full_val_loader)
+        val_loss, val_eer, val_f1, type_metrics, generator_metrics, decision_thr = _run_inference(
+            full_val_loader
+        )
 
         _log_metrics("all_dev_loss.log", tag, global_step,
-                     val_loss, val_eer, val_f1, type_metrics)
+                     val_loss, val_eer, val_f1, type_metrics, generator_metrics)
 
         if use_wandb:
             wb = {"full_eval/loss": val_loss, "full_eval/eer": val_eer,
@@ -328,6 +381,10 @@ def train(args):
             for t, m in type_metrics.items():
                 wb[f"full_eval/{t}/eer"] = m["eer"]
                 wb[f"full_eval/{t}/f1"]  = m["f1"]
+            for generator, m in generator_metrics.items():
+                gen_key = _safe_metric_key(generator)
+                wb[f"full_eval/generator/{gen_key}/f1"] = m["f1"]
+                wb[f"full_eval/generator/{gen_key}/support"] = m["support"]
             wandb.log(wb, step=global_step)
 
         print(f"\n[FullEval  @ {tag}]  loss={val_loss:.4f}  EER={val_eer:.4f}"
@@ -335,18 +392,50 @@ def train(args):
               f"  ({(time.time()-t0)/60:.1f} min)")
         for t, m in type_metrics.items():
             print(f"  [{t}]  EER={m['eer']:.4f}  F1={m['f1']:.4f}")
+        gen_f1 = "  ".join(
+            f"{generator}_F1={m['f1']:.4f}" for generator, m in generator_metrics.items()
+        )
+        print(f"  [generator] {gen_f1}")
 
-        # Save best model by save_best_by in checkpoint_all_dev/
-        cur_val = _metric_val(val_loss, val_eer, val_f1)
-        if _is_better(cur_val, best_full_val):
-            best_full_val = cur_val
-            best_path = os.path.join(args.out_fold, "checkpoint_all_dev", "best.pt")
+        metric_values = {"loss": val_loss, "eer": val_eer, "f1": val_f1}
+        for metric_name, cur_val in metric_values.items():
+            if not _is_metric_better(metric_name, cur_val, best_full_vals[metric_name]):
+                continue
+
+            best_full_vals[metric_name] = cur_val
+            best_path = os.path.join(
+                args.out_fold, "checkpoint_all_dev", f"best_{metric_name}.pt"
+            )
             torch.save(model.state_dict(), best_path)
-            meta = {"f1": val_f1, "eer": val_eer, "loss": val_loss, "step": global_step,
-                    "metric": args.save_best_by, "metric_val": cur_val}
-            with open(os.path.join(args.out_fold, "checkpoint_all_dev", "best_meta.json"), "w") as mf:
+            meta = {
+                "f1": val_f1,
+                "eer": val_eer,
+                "loss": val_loss,
+                "step": global_step,
+                "metric": metric_name,
+                "metric_val": cur_val,
+                "decision_threshold": decision_thr,
+                "type_metrics": _jsonable_metrics(type_metrics),
+                "generator_metrics": _jsonable_metrics(generator_metrics),
+            }
+            with open(
+                os.path.join(
+                    args.out_fold, "checkpoint_all_dev", f"best_{metric_name}_meta.json"
+                ),
+                "w",
+            ) as mf:
                 json.dump(meta, mf, indent=2)
-            print(f"  → All-dev best model updated ({args.save_best_by}={cur_val:.4f})")
+            print(f"  → All-dev best_{metric_name} updated ({metric_name}={cur_val:.4f})")
+
+            if metric_name == args.save_best_by:
+                best_full_val = cur_val
+                legacy_path = os.path.join(args.out_fold, "checkpoint_all_dev", "best.pt")
+                legacy_meta = os.path.join(args.out_fold, "checkpoint_all_dev", "best_meta.json")
+                torch.save(model.state_dict(), legacy_path)
+                with open(legacy_meta, "w") as mf:
+                    json.dump(meta, mf, indent=2)
+
+        _save_latest(epoch, global_step)
 
     # ── Epoch loop ────────────────────────────────────────────────────────────
 
@@ -404,6 +493,7 @@ def train(args):
             train_losses.append(loss.item())
             global_step = epoch * n_batches + i
             gs = global_step + 1   # 1-indexed
+            last_completed_step = gs
 
             with open(os.path.join(args.log_dir, "train_loss.log"), "a") as f:
                 f.write(f"{gs}\t{epoch}\t{i}\t{train_losses[-1]:.6f}\n")
@@ -413,6 +503,9 @@ def train(args):
                      "train/epoch": epoch, "train/lr": current_lr},
                     step=gs,
                 )
+
+            if gs % 10000 == 0:
+                _save_step_checkpoint(gs)
 
             # Sample-dev eval every eval_steps steps
             if args.eval_steps > 0 and gs % args.eval_steps == 0:
@@ -449,6 +542,9 @@ def train(args):
             print(f"[Warmup] skip epoch-end eval at step {gs_end}")
         elif do_sample_eval(epoch, gs_end):
             break
+
+    if last_completed_step > 0 and last_completed_step % 10000 != 0:
+        _save_step_checkpoint(last_completed_step)
 
     if use_wandb:
         wandb.finish()

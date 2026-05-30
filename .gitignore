@@ -5,3 +5,4 @@ enable_env.sh
 clear_checkpoint.sh
 *_run.sh
 .claude/
+train.csv

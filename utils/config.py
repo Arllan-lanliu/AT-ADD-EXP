@@ -64,6 +64,88 @@ def _validate_choice(value: str, choices: tuple[str, ...], name: str) -> None:
         raise ValueError(f"{name} must be one of {choices}, got {value!r}")
 
 
+_SSL_LAYER_FUSIONS = (
+    "last",
+    "cat_linear",
+    "cat_proj_v1",
+    "cat_proj_v2",
+    "mean",
+    "weight_sum",
+    "mhfa_fuse",
+    "mhfa_pool",
+)
+_SSL_MULTI_LAYER_FUSIONS = frozenset(
+    {
+        "cat_linear",
+        "cat_proj_v1",
+        "cat_proj_v2",
+        "mean",
+        "weight_sum",
+        "mhfa_fuse",
+        "mhfa_pool",
+    }
+)
+
+
+def _normalize_layer_fusion_name(layer_fusion: str) -> str:
+    lf = str(layer_fusion).strip().lower()
+    if lf == "cat":
+        lf = "cat_proj_v2"
+    elif lf == "cat_proj":
+        lf = "cat_proj_v2"
+    return lf
+
+
+def _normalize_ssl_layer_config(
+    cfg: Any,
+    *,
+    selected_attr: str,
+    fusion_attr: str,
+    config_label: str,
+) -> None:
+    lf = _normalize_layer_fusion_name(getattr(cfg, fusion_attr))
+    object.__setattr__(cfg, fusion_attr, lf)
+    _validate_choice(lf, _SSL_LAYER_FUSIONS, fusion_attr)
+
+    sl = getattr(cfg, selected_attr)
+    if sl is not None:
+        if not isinstance(sl, (list, tuple)):
+            raise TypeError(
+                f"{selected_attr} must be a list of ints or null, "
+                f"got {type(sl).__name__}"
+            )
+        sl_norm = [int(x) for x in sl]
+        object.__setattr__(
+            cfg,
+            selected_attr,
+            None if len(sl_norm) == 0 else sl_norm,
+        )
+        sl = getattr(cfg, selected_attr)
+
+    if lf in _SSL_MULTI_LAYER_FUSIONS:
+        if not sl:
+            raise ValueError(
+                f"{config_label}.{selected_attr} must be a non-empty list when "
+                f"{fusion_attr} is {lf!r}"
+            )
+    elif lf == "last" and sl is not None and len(sl) > 1:
+        raise ValueError(
+            f"{fusion_attr}='last' does not support multiple {selected_attr}; "
+            "omit it, pass a single index, or use cat_linear / cat_proj_v1 / "
+            "cat_proj_v2 / mean / weight_sum / mhfa_fuse / mhfa_pool."
+        )
+
+
+def _migrate_ssl_config(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Map legacy ssl.selected_layers / layer_fusion to xlsr_* names."""
+    out = dict(raw)
+    if "selected_layers" in out and "xlsr_selected_layers" not in out:
+        out["xlsr_selected_layers"] = out.pop("selected_layers")
+    if "layer_fusion" in out and "xlsr_layer_fusion" not in out:
+        out["xlsr_layer_fusion"] = out.pop("layer_fusion")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Sub-configs
 # ---------------------------------------------------------------------------
@@ -97,65 +179,53 @@ class SSLConfig:
     beats: str = "your_path_to_huggingface/BEATs_iter3"
     clap:  str = "your_path_to_huggingface/larger_clap_music_and_speech"
 
-    selected_layers: Optional[List[int]] = None
+    xlsr_selected_layers: Optional[List[int]] = None
     """**XLSR only.** Indices into HuggingFace ``outputs.hidden_states``.
-    With ``layer_fusion: last``: omit or empty → model top ``last_hidden_state``;
+    With ``xlsr_layer_fusion: last``: omit or empty → model top ``last_hidden_state``;
     **one** index → that layer only; multiple indices are invalid.
     With other fusion modes: non-empty list required."""
 
-    layer_fusion: str = "last"
+    xlsr_layer_fusion: str = "last"
     """**XLSR only.** ``last``: final layer (default), or the single layer given by
-    ``selected_layers``; ``cat_linear`` / ``cat_proj_v1`` / ``cat_proj_v2`` /
-    ``mean`` / ``weight_sum`` (aliases: ``cat`` / ``cat_proj`` → ``cat_proj_v2``):
+    ``xlsr_selected_layers``; ``cat_linear`` / ``cat_proj_v1`` / ``cat_proj_v2`` /
+    ``mean`` / ``weight_sum`` / ``mhfa_fuse`` / ``mhfa_pool``
+    (aliases: ``cat`` / ``cat_proj`` → ``cat_proj_v2``):
     fuse all listed layers (including when only one index is listed — projection /
     weights still apply)."""
 
+    wavlm_selected_layers: Optional[List[int]] = None
+    """**WAVLM only.** Hidden-state indices; 0 is the embedding output and
+    1..N are transformer-layer outputs."""
+
+    wavlm_layer_fusion: str = "last"
+    """**WAVLM only.** Same fusion options as ``xlsr_layer_fusion``."""
+
+    beats_selected_layers: Optional[List[int]] = None
+    """**BEATs only.** Hidden-state indices (0..encoder_layers).
+    0 is the transformer input; 1..N are outputs after each BEATs layer."""
+
+    beats_layer_fusion: str = "last"
+    """**BEATs only.** Same fusion options as ``xlsr_layer_fusion``."""
+
     def __post_init__(self) -> None:
-        lf = str(self.layer_fusion).strip().lower()
-        if lf == "cat":
-            lf = "cat_proj_v2"
-        elif lf == "cat_proj":
-            lf = "cat_proj_v2"
-        object.__setattr__(self, "layer_fusion", lf)
-        _validate_choice(
-            lf,
-            (
-                "last",
-                "cat_linear",
-                "cat_proj_v1",
-                "cat_proj_v2",
-                "mean",
-                "weight_sum",
-            ),
-            "layer_fusion",
+        _normalize_ssl_layer_config(
+            self,
+            selected_attr="xlsr_selected_layers",
+            fusion_attr="xlsr_layer_fusion",
+            config_label="ssl.xlsr",
         )
-        sl = self.selected_layers
-        if sl is not None:
-            if not isinstance(sl, (list, tuple)):
-                raise TypeError(
-                    f"selected_layers must be a list of ints or null, "
-                    f"got {type(sl).__name__}"
-                )
-            sl_norm = [int(x) for x in sl]
-            object.__setattr__(
-                self,
-                "selected_layers",
-                None if len(sl_norm) == 0 else sl_norm,
-            )
-        if lf != "last":
-            if not self.selected_layers:
-                raise ValueError(
-                    "ssl.selected_layers must be a non-empty list when "
-                    f"layer_fusion is {lf!r}"
-                )
-        elif (
-            self.selected_layers is not None and len(self.selected_layers) > 1
-        ):
-            raise ValueError(
-                "layer_fusion='last' does not support multiple selected_layers; "
-                "omit selected_layers, pass a single index, or use cat_linear / "
-                "cat_proj_v1 / cat_proj_v2 / mean / weight_sum."
-            )
+        _normalize_ssl_layer_config(
+            self,
+            selected_attr="wavlm_selected_layers",
+            fusion_attr="wavlm_layer_fusion",
+            config_label="ssl.wavlm",
+        )
+        _normalize_ssl_layer_config(
+            self,
+            selected_attr="beats_selected_layers",
+            fusion_attr="beats_layer_fusion",
+            config_label="ssl.beats",
+        )
 
 @dataclass
 class AugConfig:
@@ -377,7 +447,7 @@ class ATADDConfig:
 
         # Extract sub-config sections
         data_cfg   = DataConfig(**raw.pop("data",   {}))
-        ssl_cfg    = SSLConfig(**raw.pop("ssl",    {}))
+        ssl_cfg    = SSLConfig(**_migrate_ssl_config(raw.pop("ssl", {})))
         aug_cfg    = AugConfig(**raw.pop("aug",    {}))
         prompt_cfg = PromptConfig(**raw.pop("prompt", {}))
 

@@ -1,0 +1,80 @@
+{
+  "script_version": "1.0",
+  "seed": 2026,
+  "heldout_generators": [
+    "GradTTS",
+    "Llasa1B"
+  ],
+  "real_strategy": "random_stratified",
+  "real_val_ratio": 0.25,
+  "min_real_val": 2000,
+  "max_real_val": 6000,
+  "max_real_val_frac": 0.3,
+  "columns": {
+    "label": "label",
+    "generator": "generator",
+    "source": null,
+    "duration": null,
+    "type": "type",
+    "language": null
+  },
+  "report": {
+    "final": false,
+    "train_rows": 228271,
+    "val_rows": 9579,
+    "train_label_counts": {
+      "fake": 177645,
+      "real": 50626
+    },
+    "val_label_counts": {
+      "fake": 7579,
+      "real": 2000
+    },
+    "train_fake_generators": [
+      "AudioLDM",
+      "AudioLDM2",
+      "Audiogen",
+      "CosyVoice",
+      "DiffSpeech_fastdiff",
+      "FastDiff",
+      "FastPitch_fastdiff",
+      "FastSpeech2_fastdiff",
+      "GlowTTS",
+      "IndexTTS1",
+      "Kokoro",
+      "MelGAN",
+      "MeloTTS",
+      "MusicGen",
+      "MusicLDM",
+      "NeuCoSVC_inhouse",
+      "ParlerTTSmini",
+      "PortaSpeech_normal_fastdiff",
+      "SeedVC",
+      "So-VITS-SVC_inhouse",
+      "Stable Audio open",
+      "StarGANv2VC",
+      "Tacotron2",
+      "Tortoise",
+      "WaveGlow",
+      "WaveNet",
+      "prodiff_teacher_fastdiff"
+    ],
+    "val_fake_generators": [
+      "GradTTS",
+      "Llasa1B"
+    ],
+    "fake_generator_overlap": [],
+    "heldout_generator_val_counts": {
+      "GradTTS": 3991,
+      "Llasa1B": 3588
+    },
+    "train_orig_split_counts": {
+      "train": 141735,
+      "dev": 86536
+    },
+    "val_orig_split_counts": {
+      "train": 5046,
+      "dev": 4533
+    }
+  }
+}

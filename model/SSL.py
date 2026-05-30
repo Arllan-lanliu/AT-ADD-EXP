@@ -5,6 +5,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from model.beats.BEATs import BEATsModel
+from model.layer_fusion import (
+    IntermediateLayerFusion,
+    normalize_layer_fusion,
+    validate_layer_fusion_config,
+)
 import torchaudio
 from transformers import ClapModel, ClapProcessor
 from transformers import (
@@ -12,6 +17,7 @@ from transformers import (
     WavLMModel, WavLMConfig,
     AutoModel, AutoFeatureExtractor,
 )
+
 
 class XLSR(nn.Module):
     def __init__(
@@ -23,7 +29,11 @@ class XLSR(nn.Module):
         visual=False,
         return_hidden_states=False,
         selected_layers=None,
-        layer_fusion="last",  # "last", "cat_linear", "cat_proj_v1", "cat_proj_v2", "mean", "weight_sum"
+        layer_fusion="last",
+        mhfa_compression_dim=None,
+        mhfa_num_heads=8,
+        mhfa_output_dim=None,
+        mhfa_dropout=0.1,
     ):
         super(XLSR, self).__init__()
 
@@ -56,131 +66,28 @@ class XLSR(nn.Module):
 
         self.hidden_size = self.model.config.hidden_size  # XLSR-300M 通常是 1024
 
-        lf = str(layer_fusion).strip().lower()
-        if lf == "cat":
-            lf = "cat_proj_v2"
-        elif lf == "cat_proj":
-            lf = "cat_proj_v2"
+        lf = normalize_layer_fusion(layer_fusion)
         self.layer_fusion = lf
-        if lf in (
-            "cat_linear",
-            "cat_proj_v1",
-            "cat_proj_v2",
-            "mean",
-            "weight_sum",
-        ):
-            if not self.selected_layers:
-                raise ValueError(
-                    "XLSR: selected_layers must be a non-empty sequence when "
-                    f"layer_fusion={lf!r}"
-                )
-        elif lf == "last" and self.selected_layers is not None:
-            if len(self.selected_layers) > 1:
-                raise ValueError(
-                    "XLSR: layer_fusion='last' accepts at most one "
-                    f"selected_layers index; got {self.selected_layers!r}"
-                )
+        validate_layer_fusion_config(lf, self.selected_layers, backend_name="XLSR")
 
         n_sel = len(self.selected_layers) if self.selected_layers else 0
-        self.per_layer_ln = None
-        self.layer_proj = None
-        self.cat_linear_head = None
-        self.layer_weights = None
-
-        if lf == "cat_linear" and n_sel > 0:
-            self.cat_linear_head = nn.Linear(
-                self.hidden_size * n_sel, self.hidden_size
-            )
-        elif lf == "cat_proj_v1" and n_sel > 0:
-            self.layer_proj = nn.Sequential(
-                nn.LayerNorm(self.hidden_size * n_sel),
-                nn.Linear(self.hidden_size * n_sel, self.hidden_size),
-                nn.GELU(),
-                nn.Dropout(0.1),
-            )
-        elif lf == "cat_proj_v2" and n_sel > 0:
-            self.per_layer_ln = nn.ModuleList(
-                [nn.LayerNorm(self.hidden_size) for _ in range(n_sel)]
-            )
-            self.layer_proj = nn.Sequential(
-                nn.LayerNorm(self.hidden_size * n_sel),
-                nn.Linear(self.hidden_size * n_sel, self.hidden_size),
-                nn.Dropout(0.1),
-            )
-        elif lf == "weight_sum" and n_sel > 0:
-            self.layer_weights = nn.Parameter(torch.zeros(n_sel))
+        self.layer_fusion_mod = IntermediateLayerFusion(
+            self.hidden_size,
+            n_sel,
+            lf,
+            mhfa_compression_dim=mhfa_compression_dim,
+            mhfa_num_heads=mhfa_num_heads,
+            mhfa_output_dim=mhfa_output_dim,
+            mhfa_dropout=mhfa_dropout,
+        )
 
     def _fuse_hidden_states(self, outputs):
-        last_hidden_state = outputs.last_hidden_state
-        hidden_states = outputs.hidden_states
-        n_h = len(hidden_states)
-
-        # "last": default final layer, OR a single explicit index in selected_layers.
-        # Do not return last_hidden_state when user picked one intermediate layer.
-        if self.layer_fusion == "last":
-            if not self.selected_layers:
-                return last_hidden_state, hidden_states
-            if len(self.selected_layers) > 1:
-                raise ValueError(
-                    "XLSR: layer_fusion='last' accepts at most one index in "
-                    "selected_layers; for multiple layers use cat_linear, "
-                    "cat_proj_v1, cat_proj_v2, "
-                    f"mean, or weight_sum. Got selected_layers={self.selected_layers!r}."
-                )
-            idx = self.selected_layers[0]
-            if idx < 0 or idx >= n_h:
-                raise IndexError(
-                    f"selected_layers index {idx} out of range for "
-                    f"{n_h} hidden_states (valid 0..{n_h - 1})."
-                )
-            return hidden_states[idx], hidden_states
-
-        if not self.selected_layers:
-            return last_hidden_state, hidden_states
-
-        for i in self.selected_layers:
-            if i < 0 or i >= n_h:
-                raise IndexError(
-                    f"selected_layers index {i} out of range for "
-                    f"{n_h} hidden_states (valid 0..{n_h - 1})."
-                )
-
-        selected = [hidden_states[i] for i in self.selected_layers]
-
-        if self.layer_fusion == "cat_linear":
-            # Direct concat [B,T,C*N] -> Linear -> [B,T,C]
-            fused = torch.cat(selected, dim=-1)
-            fused = self.cat_linear_head(fused)
-
-        elif self.layer_fusion == "cat_proj_v1":
-            # Concat [B,T,C*N] -> LN+Linear+GELU+Dropout -> [B,T,C]
-            fused = torch.cat(selected, dim=-1)
-            fused = self.layer_proj(fused)
-
-        elif self.layer_fusion == "cat_proj_v2":
-            # Per-layer LN -> concat [B,T,C*N] -> project -> [B,T,C]
-            normed = [
-                ln(h) for ln, h in zip(self.per_layer_ln, selected)
-            ]
-            fused = torch.cat(normed, dim=-1)
-            fused = self.layer_proj(fused)
-
-        elif self.layer_fusion == "mean":
-            # [B, T, C] * N -> [B, T, C]
-            fused = torch.stack(selected, dim=0).mean(dim=0)
-
-        elif self.layer_fusion == "weight_sum":
-            weights = F.softmax(self.layer_weights, dim=0)
-            fused = sum(w * h for w, h in zip(weights, selected))
-
-        else:
-            raise ValueError(
-                f"Unsupported layer_fusion={self.layer_fusion}. "
-                "Choose from ['last', 'cat_linear', 'cat_proj_v1', 'cat_proj_v2', "
-                "'mean', 'weight_sum']."
-            )
-
-        return fused, hidden_states
+        return self.layer_fusion_mod.fuse(
+            outputs.last_hidden_state,
+            outputs.hidden_states,
+            self.selected_layers,
+            backend_name="XLSR",
+        )
 
     def forward(self, audio_data):
         feat = self.processor(
@@ -225,8 +132,7 @@ class XLSR(nn.Module):
 
     def extract_features(self, audio_data):
         return self.forward(audio_data)
-
-
+    
 class XLSR_init(nn.Module):
     def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True, visual=False, return_hidden_states=False):
         super(XLSR_init, self).__init__()
@@ -283,22 +189,47 @@ class XLSR_init(nn.Module):
         # Process the input audio and extract the features using the forward pass
         return self.forward(audio_data)  # Return the final layer's output
 
-
 class WAVLM(nn.Module):
-    # WAVLM-Large output dimension is 1024
-    def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True):
+    """
+    WavLM-Large hidden size = 1024, 24 transformer blocks → 25 hidden states.
+    层索引和 XLSR-300M 一致：0 = embedding output, 1~24 = transformer layer 1~24.
+    """
+    def __init__(
+        self,
+        model_dir,
+        device="cuda",
+        sampling_rate=16000,
+        freeze=True,
+        visual=False,
+        return_hidden_states=False,
+        selected_layers=None,
+        layer_fusion="last",
+        mhfa_compression_dim=None,
+        mhfa_num_heads=8,
+        mhfa_output_dim=None,
+        mhfa_dropout=0.1,
+    ):
         super(WAVLM, self).__init__()
-        # Set device (GPU or CPU)
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
-        self.sampling_rate = sampling_rate
 
-        # Load the pre-trained model configuration and weights
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.sampling_rate = sampling_rate
+        self.return_hidden_states = return_hidden_states
+        self.selected_layers = (
+            tuple(int(i) for i in selected_layers) if selected_layers is not None else None
+        )
+
         self.config = WavLMConfig.from_json_file(f"{model_dir}/config.json")
-        self.processor = Wav2Vec2FeatureExtractor.from_pretrained(model_dir, do_normalize = False)
+        self.processor = Wav2Vec2FeatureExtractor.from_pretrained(
+            model_dir,
+            do_normalize=False,
+        )
         self.model = WavLMModel.from_pretrained(model_dir).to(self.device)
         self.freeze = freeze
-        # Enable output of hidden states
+
+        # 必须打开，否则 outputs.hidden_states 会是 None
         self.model.config.output_hidden_states = True
+
+        self.visual = visual
 
         if freeze:
             self.model.eval()
@@ -307,21 +238,76 @@ class WAVLM(nn.Module):
         else:
             self.model.train()
 
+        self.hidden_size = self.model.config.hidden_size  # WavLM-Large 是 1024
+
+        lf = normalize_layer_fusion(layer_fusion)
+        self.layer_fusion = lf
+        validate_layer_fusion_config(lf, self.selected_layers, backend_name="WAVLM")
+
+        n_sel = len(self.selected_layers) if self.selected_layers else 0
+        self.layer_fusion_mod = IntermediateLayerFusion(
+            self.hidden_size,
+            n_sel,
+            lf,
+            mhfa_compression_dim=mhfa_compression_dim,
+            mhfa_num_heads=mhfa_num_heads,
+            mhfa_output_dim=mhfa_output_dim,
+            mhfa_dropout=mhfa_dropout,
+        )
+
+    def _fuse_hidden_states(self, outputs):
+        return self.layer_fusion_mod.fuse(
+            outputs.last_hidden_state,
+            outputs.hidden_states,
+            self.selected_layers,
+            backend_name="WAVLM",
+        )
+
     def forward(self, audio_data):
-        # Process the input audio using Wav2Vec2 Feature Extractor
-        feat = self.processor(audio_data, sampling_rate=self.sampling_rate, return_tensors="pt").input_values.to(self.device)
-        feat = feat.squeeze(dim=0)  
+        feat = self.processor(
+            audio_data,
+            sampling_rate=self.sampling_rate,
+            return_tensors="pt",
+        ).input_values.to(self.device)
+
+        feat = feat.squeeze(dim=0)
+
+        if self.visual:
+            outputs = self.model(
+                feat,
+                output_attentions=True,
+                output_hidden_states=True,
+            )
+            attentions = outputs.attentions
+            fused, hidden_states = self._fuse_hidden_states(outputs)
+
+            if self.return_hidden_states:
+                return fused, attentions, hidden_states
+            return fused, attentions
+
         if self.freeze:
             with torch.no_grad():
-                output = self.model(feat).last_hidden_state
+                outputs = self.model(
+                    feat,
+                    output_hidden_states=True,
+                )
+                fused, hidden_states = self._fuse_hidden_states(outputs)
         else:
-            output = self.model(feat).last_hidden_state
-        return output
-    
-    def extract_features(self, audio_data):
-        # Process the input audio and extract the features using the forward pass
-        return self.forward(audio_data)  # Return the final layer's output
+            outputs = self.model(
+                feat,
+                output_hidden_states=True,
+            )
+            fused, hidden_states = self._fuse_hidden_states(outputs)
 
+        if self.return_hidden_states:
+            return fused, hidden_states
+
+        return fused
+
+    def extract_features(self, audio_data):
+        return self.forward(audio_data)
+
+        
 
 class MERT(nn.Module):
     def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True):
@@ -586,6 +572,96 @@ class PT_MERT(nn.Module):
 
 
 class BEATs(nn.Module):
+    def __init__(
+        self,
+        model_dir,
+        device="cuda",
+        sampling_rate=16000,
+        freeze=True,
+        return_hidden_states=False,
+        selected_layers=None,
+        layer_fusion="last",
+        # ── MHFA-specific kwargs (only used if layer_fusion in {mhfa_fuse, mhfa_pool}) ──
+        mhfa_compression_dim=None,   # D_cmp; default = hidden_size // 4
+        mhfa_num_heads=8,            # H; only used by mhfa_pool
+        mhfa_output_dim=None,        # D_out for mhfa_pool; default = hidden_size
+        mhfa_dropout=0.1,
+    ):
+        super(BEATs, self).__init__()
+
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.sampling_rate = sampling_rate
+        self.freeze = freeze
+        self.return_hidden_states = return_hidden_states
+        self.selected_layers = (
+            tuple(int(i) for i in selected_layers) if selected_layers is not None else None
+        )
+
+        self.model = BEATsModel(
+            cfg_path=f"{model_dir}/BEATs_iter3_plus_AS2M.pt"
+        ).to(self.device)
+
+        self.hidden_size = self.model.model.cfg.encoder_embed_dim
+        self.num_hidden_states = self.model.model.cfg.encoder_layers + 1
+
+        lf = normalize_layer_fusion(layer_fusion)
+        self.layer_fusion = lf
+        validate_layer_fusion_config(lf, self.selected_layers, backend_name="BEATs")
+
+        n_sel = len(self.selected_layers) if self.selected_layers else 0
+        self.layer_fusion_mod = IntermediateLayerFusion(
+            self.hidden_size,
+            n_sel,
+            lf,
+            mhfa_compression_dim=mhfa_compression_dim,
+            mhfa_num_heads=mhfa_num_heads,
+            mhfa_output_dim=mhfa_output_dim,
+            mhfa_dropout=mhfa_dropout,
+        )
+
+        if freeze:
+            self.model.eval()
+            for param in self.model.parameters():
+                param.requires_grad = False
+        else:
+            self.model.train()
+
+    def _fuse_hidden_states(self, last_hidden_state, hidden_states):
+        return self.layer_fusion_mod.fuse(
+            last_hidden_state,
+            hidden_states,
+            self.selected_layers,
+            backend_name="BEATs",
+        )
+
+    def extract_features(self, input_data):
+        if input_data.ndim == 3:
+            input_tmp = input_data[:, :, 0]
+        else:
+            input_tmp = input_data
+
+        need_hidden = self.return_hidden_states or self.selected_layers is not None
+        if need_hidden:
+            max_idx = (
+                max(self.selected_layers)
+                if self.selected_layers is not None
+                else self.num_hidden_states - 1
+            )
+            emb, hidden_states = self.model(
+                input_tmp,
+                tgt_layer=max_idx,
+                return_hidden_states=True,
+            )
+            emb, hidden_states = self._fuse_hidden_states(emb, hidden_states)
+            if self.return_hidden_states:
+                return emb, hidden_states
+            return emb
+
+        return self.model(input_tmp)
+
+
+
+class BEATs_init(nn.Module):
     def __init__(self, model_dir, device='cuda', sampling_rate=16000, freeze=True):
         super(BEATs, self).__init__()
 

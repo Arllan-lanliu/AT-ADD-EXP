@@ -1,0 +1,70 @@
+seed: 1234
+gpu: '1'
+train_task: atadd-track1
+out_fold: ./ckpt_t1_trunk_vote/xlsr_3_11_24_multicrop
+model: ft-w2v2aasist
+fusion: cat_linear
+audio_len: 64600
+filter_types: speech
+type_loss_weight: 0.1
+assist_project_choice: 2
+num_epochs: 100
+batch_size: 24
+lr: 1.0e-06
+lr_decay: 0.5
+interval: 2
+beta_1: 0.9
+beta_2: 0.999
+eps: 1.0e-08
+num_workers: 4
+base_loss: ce
+save_best_by: loss
+continue_training: false
+eval_threshold_mode: fixed
+score_threshold: 0.5
+SAM: false
+ASAM: false
+CSAM: false
+amp: true
+log_dir: null
+eval_steps: 1000
+full_eval_steps: 6000
+eval_warmup_steps: 6000
+patience: 20
+data:
+  atadd_t1_train_audio: /home/new_disk/liulan/workspace/dataset/at_add_track2/train
+  atadd_t1_train_label: /home/new_disk/liulan/workspace/dataset/at_add_track2/labels/train.csv
+  atadd_t1_dev_audio: /home/new_disk/liulan/workspace/dataset/at_add_track2/dev
+  atadd_t1_dev_label: /home/new_disk/liulan/workspace/dataset/at_add_track2/labels/dev.csv
+  atadd_t1_eval_audio: /home/new_disk/liulan/workspace/dataset/at_add_track1/eval_t1
+  atadd_t2_train_audio: your_path_to_dataset/atadd/T2/train
+  atadd_t2_train_label: your_path_to_dataset/atadd/T2/label/train.csv
+  atadd_t2_dev_audio: your_path_to_dataset/atadd/T2/dev
+  atadd_t2_dev_label: your_path_to_dataset/atadd/T2/label/dev.csv
+  atadd_t2_eval_audio: your_path_to_dataset/atadd/T2/eval
+ssl:
+  xlsr: /home/new_disk/liulan/workspace/otherfiles/huggingface/wav2vec2-xls-r-300m
+  wavlm: /home/new_disk/liulan/workspace/otherfiles/huggingface/wavlm-large
+  mert: /home/new_disk/liulan/workspace/otherfiles/huggingface/MERT-v1-330M
+  beats: /home/new_disk/liulan/workspace/otherfiles/huggingface/BEATs_iter3
+  clap: /home/new_disk/liulan/workspace/otherfiles/huggingface/larger_clap_music_and_speech
+  selected_layers:
+  - 3
+  - 11
+  - 24
+  layer_fusion: cat_proj_v1
+aug:
+  aug_speech: 0.2
+  aug_sound: 0.0
+  aug_singing: 0.0
+  aug_music: 0.0
+  speech_aug_method: codec
+  speech_rawboost_algo: 5
+  musan_path: your_path/musan
+  rir_path: your_path/RIRS_NOISES
+  music_aug_method: spec_augment
+prompt:
+  prompt_dim: 1024
+  num_prompt_tokens: 10
+  pt_dropout: 0.1
+  num_wavelet_tokens: 4

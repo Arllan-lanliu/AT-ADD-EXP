@@ -98,6 +98,7 @@ def parse_args():
         help="Dev label CSV (default: from saved training config)",
     )
     parser.add_argument("--audio_len", type=int, default=None)
+    parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--attn_frames", type=int, default=200, help="Unified side length for attention maps.")
     parser.add_argument("--score_suffix", type=str, default="_dev")
     parser.add_argument("--out_dir", type=str, default=None)
@@ -293,7 +294,7 @@ def main():
         dev_set,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=8,
+        num_workers=args.num_workers,
         pin_memory=args.cuda,
     )
 
@@ -306,7 +307,7 @@ def main():
     score_path = os.path.join(result_dir, f"{args.eval_task}_logits{args.score_suffix}.csv")
     with open(score_path, "w", newline="", encoding="utf-8") as sf:
         writer = csv.writer(sf)
-        writer.writerow(["name", "predict", "type", "label"])
+        writer.writerow(["name", "score", "logit_real", "logit_fake", "predict", "type", "label"])
 
         with torch.no_grad():
             for wave, filenames in tqdm(dev_loader, desc="dev-analysis"):
@@ -319,6 +320,7 @@ def main():
                 else:
                     feats, logits = out[0], out[1]
                     ll_mean = None
+                logits_np = logits.detach().cpu().numpy()
                 probs_real = F.softmax(logits, dim=1)[:, 0].detach().cpu().numpy()
                 feat_np = feats.detach().cpu().numpy()
 
@@ -329,7 +331,15 @@ def main():
                         continue
                     t, y = meta
                     predict = "real" if probs_real[i] >= 0.5 else "fake"
-                    writer.writerow([name, predict, t, y])
+                    writer.writerow([
+                        name,
+                        float(probs_real[i]),
+                        float(logits_np[i, 0]),
+                        float(logits_np[i, 1]),
+                        predict,
+                        t,
+                        y,
+                    ])
 
                     if not args.metrics_only:
                         if visual:

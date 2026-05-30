@@ -15,8 +15,12 @@ ssl:
   beats: your_path/BEATs_iter3
   clap:  your_path/larger_clap_music_and_speech
   # XLSR multi-layer readout (ignored by non-XLSR frontends):
-  selected_layers: null     # e.g. [8, 16, 24]; required unless layer_fusion is last
-  layer_fusion: last       # last | cat_linear | cat_proj_v1 | cat_proj_v2 | mean | weight_sum  (cat / cat_proj -> cat_proj_v2)
+  xlsr_selected_layers: null   # e.g. [3, 11, 24]; required unless xlsr_layer_fusion is last
+  xlsr_layer_fusion: last     # last | cat_linear | cat_proj_v1 | cat_proj_v2 | mean | weight_sum | mhfa_fuse | mhfa_pool
+  wavlm_selected_layers: null # e.g. [3, 11, 24]; required unless wavlm_layer_fusion is last
+  wavlm_layer_fusion: last    # same options as xlsr_layer_fusion
+  beats_selected_layers: null # e.g. [3, 6, 12]; required unless beats_layer_fusion is last
+  beats_layer_fusion: last      # same options as xlsr_layer_fusion
 # ── Task & output ─────────────────────────────────────────────────────────────
 filter_types: speech,sound,music,singing   # Omit or empty = use all types.
 train_task: atadd-track2

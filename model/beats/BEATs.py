@@ -156,6 +156,8 @@ class BEATs(nn.Module):
         padding_mask: Optional[torch.Tensor] = None,
         fbank_mean: float = 15.41663,
         fbank_std: float = 6.55582,
+        tgt_layer: Optional[int] = None,
+        return_hidden_states: bool = False,
     ):
         fbank = self.preprocess(source, fbank_mean=fbank_mean, fbank_std=fbank_std)
 
@@ -176,10 +178,23 @@ class BEATs(nn.Module):
 
         x = self.dropout_input(features)
 
+        encoder_tgt_layer = None
+        if tgt_layer is not None:
+            # Public hidden-state indices use 0=input, 1..N=encoder layer outputs.
+            # TransformerEncoder.tgt_layer is zero-based over encoder layers.
+            encoder_tgt_layer = max(int(tgt_layer) - 1, 0)
+        elif return_hidden_states:
+            encoder_tgt_layer = int(self.cfg.encoder_layers) - 1
+
         x, layer_results = self.encoder(
             x,
             padding_mask=padding_mask,
+            layer=encoder_tgt_layer,
         )
+
+        if return_hidden_states:
+            hidden_states = tuple(h.transpose(0, 1) for h, _ in layer_results)
+            return x, padding_mask, hidden_states
 
         return x, padding_mask
 
@@ -195,6 +210,19 @@ class BEATsModel(nn.Module):
         self.model = BEATs_model
         self.ckpt = checkpoint
 
-    def forward(self, x):
-        features = self.model.extract_features(x)[0]
+    def forward(
+        self,
+        x,
+        tgt_layer: Optional[int] = None,
+        return_hidden_states: bool = False,
+    ):
+        out = self.model.extract_features(
+            x,
+            tgt_layer=tgt_layer,
+            return_hidden_states=return_hidden_states,
+        )
+        if return_hidden_states:
+            features, _, hidden_states = out
+            return features, hidden_states
+        features = out[0]
         return features

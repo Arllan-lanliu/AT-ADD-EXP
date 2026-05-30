@@ -82,7 +82,8 @@ def build_model_and_optimizer(args):
     model : nn.Module
     optimizer : torch.optim.Optimizer (or SAM wrapper)
     criterion : nn.Module
-    resume_info : dict with keys ``start_epoch``, ``best_sample_val``, ``best_full_val``, ``no_improve``
+    resume_info : dict with keys ``start_epoch``, ``best_sample_val``,
+    ``best_full_val``, ``best_full_vals``, ``no_improve``
     """
     model = build_model(args).to(args.device)
 
@@ -106,11 +107,17 @@ def build_model_and_optimizer(args):
     # Sentinel values: for lower-is-better metrics (loss/eer) use +inf;
     # for higher-is-better (f1) use -inf.
     _worse_sentinel = -float("inf") if args.save_best_by == "f1" else float("inf")
+    _best_full_vals = {
+        "loss": float("inf"),
+        "eer": float("inf"),
+        "f1": -float("inf"),
+    }
     resume_info = dict(
         start_epoch=0,
         global_step=0,
         best_sample_val=_worse_sentinel,
         best_full_val=_worse_sentinel,
+        best_full_vals=_best_full_vals,
         no_improve=0,
     )
 
@@ -126,6 +133,7 @@ def build_model_and_optimizer(args):
                 global_step=ckpt.get("global_step", 0),
                 best_sample_val=ckpt.get("best_sample_val", _worse_sentinel),
                 best_full_val=ckpt.get("best_full_val",   _worse_sentinel),
+                best_full_vals={**_best_full_vals, **ckpt.get("best_full_vals", {})},
                 no_improve=ckpt.get("no_improve", 0),
             )
             print(f"Resumed from epoch {resume_info['start_epoch']}")

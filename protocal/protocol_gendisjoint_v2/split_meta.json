@@ -1,0 +1,352 @@
+{
+  "script_version": "2.0",
+  "seed": 2026,
+  "heldout_generators": [
+    "Audiogen",
+    "FastDiff",
+    "MeloTTS",
+    "MusicGen",
+    "NeuCoSVC_inhouse",
+    "Tortoise"
+  ],
+  "columns": {
+    "label": "label",
+    "generator": "generator",
+    "type": "type",
+    "source": null
+  },
+  "selection": {
+    "strategy": "type_balanced_auto_generator_holdout",
+    "fake_val_ratio": 0.15,
+    "selected_types": [
+      "music",
+      "singing",
+      "sound",
+      "speech"
+    ],
+    "fake_type_counts": {
+      "music": 21939,
+      "singing": 39000,
+      "sound": 44975,
+      "speech": 79310
+    },
+    "selected_by_type": {
+      "music": [
+        "MusicGen"
+      ],
+      "singing": [
+        "NeuCoSVC_inhouse"
+      ],
+      "sound": [
+        "Audiogen"
+      ],
+      "speech": [
+        "FastDiff",
+        "MeloTTS",
+        "Tortoise"
+      ]
+    },
+    "forced_heldout_generators": [],
+    "excluded_heldout_generators": [],
+    "generator_stats": {
+      "AudioLDM": {
+        "total": 14992,
+        "type_counts": {
+          "sound": 14992
+        },
+        "primary_type": "sound"
+      },
+      "AudioLDM2": {
+        "total": 20511,
+        "type_counts": {
+          "music": 5511,
+          "sound": 15000
+        },
+        "primary_type": "sound"
+      },
+      "Audiogen": {
+        "total": 14983,
+        "type_counts": {
+          "sound": 14983
+        },
+        "primary_type": "sound"
+      },
+      "CosyVoice": {
+        "total": 3835,
+        "type_counts": {
+          "speech": 3835
+        },
+        "primary_type": "speech"
+      },
+      "DiffSpeech_fastdiff": {
+        "total": 3997,
+        "type_counts": {
+          "speech": 3997
+        },
+        "primary_type": "speech"
+      },
+      "FastDiff": {
+        "total": 3990,
+        "type_counts": {
+          "speech": 3990
+        },
+        "primary_type": "speech"
+      },
+      "FastPitch_fastdiff": {
+        "total": 3995,
+        "type_counts": {
+          "speech": 3995
+        },
+        "primary_type": "speech"
+      },
+      "FastSpeech2_fastdiff": {
+        "total": 3996,
+        "type_counts": {
+          "speech": 3996
+        },
+        "primary_type": "speech"
+      },
+      "GlowTTS": {
+        "total": 4000,
+        "type_counts": {
+          "speech": 4000
+        },
+        "primary_type": "speech"
+      },
+      "GradTTS": {
+        "total": 3991,
+        "type_counts": {
+          "speech": 3991
+        },
+        "primary_type": "speech"
+      },
+      "IndexTTS1": {
+        "total": 3995,
+        "type_counts": {
+          "speech": 3995
+        },
+        "primary_type": "speech"
+      },
+      "Kokoro": {
+        "total": 3998,
+        "type_counts": {
+          "speech": 3998
+        },
+        "primary_type": "speech"
+      },
+      "Llasa1B": {
+        "total": 3588,
+        "type_counts": {
+          "speech": 3588
+        },
+        "primary_type": "speech"
+      },
+      "MelGAN": {
+        "total": 3997,
+        "type_counts": {
+          "speech": 3997
+        },
+        "primary_type": "speech"
+      },
+      "MeloTTS": {
+        "total": 3984,
+        "type_counts": {
+          "speech": 3984
+        },
+        "primary_type": "speech"
+      },
+      "MusicGen": {
+        "total": 5416,
+        "type_counts": {
+          "music": 5416
+        },
+        "primary_type": "music"
+      },
+      "MusicLDM": {
+        "total": 5497,
+        "type_counts": {
+          "music": 5497
+        },
+        "primary_type": "music"
+      },
+      "NeuCoSVC_inhouse": {
+        "total": 13000,
+        "type_counts": {
+          "singing": 13000
+        },
+        "primary_type": "singing"
+      },
+      "ParlerTTSmini": {
+        "total": 3993,
+        "type_counts": {
+          "speech": 3993
+        },
+        "primary_type": "speech"
+      },
+      "PortaSpeech_normal_fastdiff": {
+        "total": 3990,
+        "type_counts": {
+          "speech": 3990
+        },
+        "primary_type": "speech"
+      },
+      "SeedVC": {
+        "total": 13000,
+        "type_counts": {
+          "singing": 13000
+        },
+        "primary_type": "singing"
+      },
+      "So-VITS-SVC_inhouse": {
+        "total": 13000,
+        "type_counts": {
+          "singing": 13000
+        },
+        "primary_type": "singing"
+      },
+      "Stable Audio open": {
+        "total": 5515,
+        "type_counts": {
+          "music": 5515
+        },
+        "primary_type": "music"
+      },
+      "StarGANv2VC": {
+        "total": 3998,
+        "type_counts": {
+          "speech": 3998
+        },
+        "primary_type": "speech"
+      },
+      "Tacotron2": {
+        "total": 3992,
+        "type_counts": {
+          "speech": 3992
+        },
+        "primary_type": "speech"
+      },
+      "Tortoise": {
+        "total": 3981,
+        "type_counts": {
+          "speech": 3981
+        },
+        "primary_type": "speech"
+      },
+      "WaveGlow": {
+        "total": 3994,
+        "type_counts": {
+          "speech": 3994
+        },
+        "primary_type": "speech"
+      },
+      "WaveNet": {
+        "total": 3999,
+        "type_counts": {
+          "speech": 3999
+        },
+        "primary_type": "speech"
+      },
+      "prodiff_teacher_fastdiff": {
+        "total": 3997,
+        "type_counts": {
+          "speech": 3997
+        },
+        "primary_type": "speech"
+      }
+    }
+  },
+  "real_selection": {
+    "strategy": "type_stratified",
+    "real_ratio_to_fake": 0.25,
+    "min_real_val_per_type": 300,
+    "max_real_val_per_type": 2000,
+    "max_real_val_frac_per_type": 0.3,
+    "selected_by_type": {
+      "music": 1354,
+      "singing": 2000,
+      "sound": 2000,
+      "speech": 2000
+    }
+  },
+  "report": {
+    "final": false,
+    "train_rows": 185142,
+    "val_rows": 52708,
+    "train_label_counts": {
+      "fake": 139870,
+      "real": 45272
+    },
+    "val_label_counts": {
+      "fake": 45354,
+      "real": 7354
+    },
+    "train_type_counts": {
+      "music": 20002,
+      "singing": 37000,
+      "sound": 42786,
+      "speech": 85354
+    },
+    "val_type_counts": {
+      "music": 6770,
+      "singing": 15000,
+      "sound": 16983,
+      "speech": 13955
+    },
+    "val_fake_type_counts": {
+      "music": 5416,
+      "singing": 13000,
+      "sound": 14983,
+      "speech": 11955
+    },
+    "train_fake_generators": [
+      "AudioLDM",
+      "AudioLDM2",
+      "CosyVoice",
+      "DiffSpeech_fastdiff",
+      "FastPitch_fastdiff",
+      "FastSpeech2_fastdiff",
+      "GlowTTS",
+      "GradTTS",
+      "IndexTTS1",
+      "Kokoro",
+      "Llasa1B",
+      "MelGAN",
+      "MusicLDM",
+      "ParlerTTSmini",
+      "PortaSpeech_normal_fastdiff",
+      "SeedVC",
+      "So-VITS-SVC_inhouse",
+      "Stable Audio open",
+      "StarGANv2VC",
+      "Tacotron2",
+      "WaveGlow",
+      "WaveNet",
+      "prodiff_teacher_fastdiff"
+    ],
+    "val_fake_generators": [
+      "Audiogen",
+      "FastDiff",
+      "MeloTTS",
+      "MusicGen",
+      "NeuCoSVC_inhouse",
+      "Tortoise"
+    ],
+    "fake_generator_overlap": [],
+    "heldout_generator_val_counts": {
+      "Audiogen": 14983,
+      "FastDiff": 3990,
+      "MeloTTS": 3984,
+      "MusicGen": 5416,
+      "NeuCoSVC_inhouse": 13000,
+      "Tortoise": 3981
+    },
+    "train_orig_split_counts": {
+      "train": 112673,
+      "dev": 72469
+    },
+    "val_orig_split_counts": {
+      "train": 34108,
+      "dev": 18600
+    }
+  }
+}

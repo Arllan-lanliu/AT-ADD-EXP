@@ -167,7 +167,75 @@ class XLSRMERTAASIST(nn.Module):
         return super().eval()
 
 
+class WAVLMAASIST(nn.Module):
+    def __init__(self, model_dir, device='cuda', freeze = True):
+        super(WAVLMAASIST, self).__init__()
 
+        # Initialize XLSRWithPrompt (features extractor)
+        self.wavlm = WAVLM(
+            model_dir=model_dir,
+            device=device,
+            freeze=freeze
+        )
+
+        # Initialize W2VAASIST (main model)
+        self.w2vaasist = AASIST()
+
+    def forward(self, audio_data):
+        # Extract features using XLSRWithPrompt
+        features = self.wavlm.extract_features(audio_data)
+
+        # Pass the features through W2VAASIST
+        last_hidden, output = self.w2vaasist(features)
+        return last_hidden, output
+
+    def train(self, mode=True):
+        # Set train status for both components
+        if mode:
+            self.w2vaasist.train(mode)
+        else:
+            self.w2vaasist.eval()
+
+    def eval(self):
+        self.w2vaasist.eval()
+        self.wavlm.eval()   # important       
+
+
+class MERTAASIST(nn.Module):
+    def __init__(self, model_dir, device='cuda',freeze = True):
+        super(MERTAASIST, self).__init__()
+
+        # Initialize XLSRWithPrompt (features extractor)
+        self.MERT = MERT(
+            model_dir=model_dir,
+            device=device,
+            freeze=freeze
+        )
+
+        # Initialize W2VAASIST (main model)
+        self.w2vaasist = AASIST()
+
+    def forward(self, audio_data):
+        # Extract features using XLSRWithPrompt
+        features = self.MERT.extract_features(audio_data)
+
+        # Pass the features through W2VAASIST
+        last_hidden, output = self.w2vaasist(features)
+        return last_hidden, output
+
+    def train(self, mode=True):
+        # Set train status for both components
+        if mode:
+            self.w2vaasist.train(mode)
+        else:
+            self.w2vaasist.eval()
+
+    def eval(self):
+        # Set eval status for both components
+        self.w2vaasist.eval()
+        self.MERT.eval()
+
+        
 # =============================================================================
 # Generic frontend-backend wrappers
 # =============================================================================
@@ -408,11 +476,29 @@ def _assist_project_choice(args) -> int:
 
 def _xlsr_frontend_kw(args) -> dict:
     """Optional multi-layer fusion kwargs for :class:`SSL.XLSR` (from flat ``args``)."""
-    sl = getattr(args, "selected_layers", None)
-    lf = getattr(args, "layer_fusion", None)
+    sl = getattr(args, "xlsr_selected_layers", None)
+    if sl is None:
+        sl = getattr(args, "selected_layers", None)
+    lf = getattr(args, "xlsr_layer_fusion", None)
     if lf is None:
-        lf = "last"
+        lf = getattr(args, "layer_fusion", "last")
     return {"selected_layers": sl, "layer_fusion": str(lf)}
+
+
+def _beats_frontend_kw(args) -> dict:
+    """Optional multi-layer fusion kwargs for :class:`SSL.BEATs` (from flat ``args``)."""
+    return {
+        "selected_layers": getattr(args, "beats_selected_layers", None),
+        "layer_fusion": getattr(args, "beats_layer_fusion", "last"),
+    }
+
+
+def _wavlm_frontend_kw(args) -> dict:
+    """Optional multi-layer fusion kwargs for :class:`SSL.WAVLM` (from flat ``args``)."""
+    return {
+        "selected_layers": getattr(args, "wavlm_selected_layers", None),
+        "layer_fusion": getattr(args, "wavlm_layer_fusion", "last"),
+    }
 # ── Conventional CM ───────────────────────────────────────────────────────────
 
 @register_model('aasist')
@@ -445,7 +531,12 @@ def _build_fr_w2v2aasist(args):
 @register_model('fr-wavlmaasist')
 def _build_fr_wavlmaasist(args):
     return SingleSSLModel(
-        frontend=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=True),
+        frontend=WAVLM(
+            model_dir=args.wavlm,
+            device=_dev(args),
+            freeze=True,
+            **_wavlm_frontend_kw(args),
+        ),
         backend=AASIST(
             in_dim=1024, assist_project_choice=_assist_project_choice(args)
         ),
@@ -495,7 +586,12 @@ def _build_ft_w2v2assist_baseline(args):
 @register_model('ft-wavlmaasist')
 def _build_ft_wavlmaasist(args):
     return SingleSSLModel(
-        frontend=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=False),
+        frontend=WAVLM(
+            model_dir=args.wavlm,
+            device=_dev(args),
+            freeze=False,
+            **_wavlm_frontend_kw(args),
+        ),
         backend=AASIST(
             in_dim=1024, assist_project_choice=_assist_project_choice(args)
         ),
@@ -516,7 +612,12 @@ def _build_ft_mertaasist(args):
 def _build_ft_beatsaasist(args):
     # BEATs encoder stays frozen; only the AASIST head is fine-tuned
     return SingleSSLModel(
-        frontend=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
+        frontend=BEATs(
+            model_dir=args.beats,
+            device=_dev(args),
+            freeze=False,
+            **_beats_frontend_kw(args),
+        ),
         backend=AASIST(
             in_dim=768, assist_project_choice=_assist_project_choice(args)
         ),
@@ -545,7 +646,12 @@ def _build_ft_xlsrwavlmaasist(args):
             freeze=False,
             **_xlsr_frontend_kw(args),
         ),
-        frontend_b=WAVLM(model_dir=args.wavlm, device=_dev(args), freeze=False),
+        frontend_b=WAVLM(
+            model_dir=args.wavlm,
+            device=_dev(args),
+            freeze=False,
+            **_wavlm_frontend_kw(args),
+        ),
         fusion_module=build_fusion_module(_fusion(args), 1024, 1024, 1024),
         backend=AASIST(
             in_dim=1024, assist_project_choice=_assist_project_choice(args)
@@ -564,7 +670,12 @@ def _build_ft_xlsrbeatsaasist(args):
             freeze=False,
             **_xlsr_frontend_kw(args),
         ),
-        frontend_b=BEATs(model_dir=args.beats, device=_dev(args), freeze=False),
+        frontend_b=BEATs(
+            model_dir=args.beats,
+            device=_dev(args),
+            freeze=False,
+            **_beats_frontend_kw(args),
+        ),
         fusion_module=build_fusion_module(_fusion(args), 1024, 768, 1024),
         backend=AASIST(
             in_dim=1024, assist_project_choice=_assist_project_choice(args)
