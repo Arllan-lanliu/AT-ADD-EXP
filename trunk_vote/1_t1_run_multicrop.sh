@@ -5,7 +5,7 @@
 
 set -e
 
-gpu=4
+gpu=0
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 CONFIGS=(
